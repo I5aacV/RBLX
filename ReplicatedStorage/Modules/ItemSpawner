@@ -494,29 +494,13 @@ end
 -- INITIALIZATION
 -- ======================================================================== 
 
-local itemSpawner = ItemSpawner.new()
+-- ========================================================================
+-- EXPORT MODULE (No global creation - loader handles this)
+-- ========================================================================
 
--- Export globally
-_G.ItemSpawner = itemSpawner
+-- ========================================================================
+-- EXPORT MODULE (No global creation - loader handles this)
+-- ========================================================================
 
--- Connect to player events
-Players.PlayerAdded:Connect(function(player)
-	if _G.ItemEffects then
-		_G.ItemEffects:InitializePlayer(player)
-	end
-end)
-
-print("🎮 Fixed Item Spawning System loaded!")
-print("📋 Features:")
-print(" ✅ Folder-based template loading")
-print(" ✅ Rarity-based visual effects")
-print(" ✅ No duplicate function definitions")
-print(" ✅ Automatic workspace cleanup")
-print(" ✅ Fallback compatibility")
-print("")
-print("🔧 Debug Commands:")
-print(" _G.ItemSpawner:listTemplates()")
-print(" _G.ItemSpawner:spawnSpecificItem(roomModel, 'itemId')")
-print(" _G.ItemSpawner:clearAllItems()")
-
-return itemSpawner
+print("📦 ItemSpawner module loaded!")
+return ItemSpawner
