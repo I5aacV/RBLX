@@ -1,0 +1,480 @@
+-- ========================================================================
+-- PLAYER STATS PULL-OUT TAB UI (COMPLETE WITH SERVER COMMUNICATION)
+-- Place this as a LocalScript in StarterPlayerScripts
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Wait for the RemoteEvent
+local statsUpdateEvent = ReplicatedStorage:WaitForChild("UpdatePlayerStats", 10)
+
+-- Configuration
+local CONFIG = {
+	-- Tab settings
+	TAB_WIDTH = 300,
+	TAB_HEIGHT = 400,
+	TAB_POSITION = UDim2.new(1, -70, 0.5, -200), -- Right side, centered
+	CLOSED_POSITION = UDim2.new(1, -50, 0.5, -200), -- Tab visible
+	OPEN_POSITION = UDim2.new(1, -320, 0.5, -200), -- Panel visible
+
+	-- Animation
+	TWEEN_TIME = 0.3,
+	UPDATE_INTERVAL = 2, -- How often to refresh stats when open
+
+	-- Toggle key
+	TOGGLE_KEY = Enum.KeyCode.Tab
+}
+
+-- Stats display configuration
+local STAT_DISPLAY = {
+	-- Combat Stats
+	{key = "damage", label = "💥 Damage", format = "%.1f", default = 10},
+	{key = "fireRate", label = "⚡ Fire Rate", format = "%+.2f", default = 0, suffix = " tears/sec"},
+	{key = "shotSpeed", label = "🏃 Shot Speed", format = "%+.1f", default = 0},
+	{key = "range", label = "📏 Range", format = "%+.1f", default = 0},
+
+	-- Character Stats
+	{key = "speed", label = "🦶 Speed", format = "%.1f", default = 16},
+	{key = "luck", label = "🍀 Luck", format = "%+.0f", default = 0},
+
+	-- Health Stats
+	{key = "maxHearts", label = "💖 Max Hearts", format = "%.0f", default = 3},
+	{key = "currentHearts", label = "❤️ Current Health", format = "%.1f", default = 6, suffix = " hits"},
+	{key = "extraLives", label = "💀 Extra Lives", format = "%.0f", default = 0},
+
+	-- Special Abilities (will be shown as Yes/No)
+	{key = "canFly", label = "✈️ Flight", type = "boolean"},
+	{key = "hasSpectralTears", label = "👻 Spectral Tears", type = "boolean"},
+	{key = "hasPiercingTears", label = "🔸 Piercing Tears", type = "boolean"},
+	{key = "hasHomingTears", label = "🎯 Homing Tears", type = "boolean"},
+	{key = "hasExplosiveTears", label = "💥 Explosive Tears", type = "boolean"}
+}
+
+-- ========================================================================
+-- STATS TAB MANAGER CLASS
+-- ========================================================================
+
+local StatsTabManager = {}
+StatsTabManager.__index = StatsTabManager
+
+function StatsTabManager.new()
+	local self = setmetatable({}, StatsTabManager)
+
+	self.isOpen = false
+	self.gui = nil
+	self.mainFrame = nil
+	self.statLabels = {}
+	self.lastUpdate = 0
+	self.cachedStats = nil -- Store received stats
+
+	self:createUI()
+	self:connectEvents()
+	self:connectStatsReceiver() -- Connect to server stats
+	self:requestStatsUpdate() -- Request initial stats
+	self:startUpdateLoop()
+
+	return self
+end
+
+-- ========================================================================
+-- SERVER COMMUNICATION
+-- ========================================================================
+
+-- Connect to receive stats from server
+function StatsTabManager:connectStatsReceiver()
+	if statsUpdateEvent then
+		statsUpdateEvent.OnClientEvent:Connect(function(statsData)
+			self.cachedStats = statsData
+			print("📊 Received stats from server:", statsData.itemCount, "items")
+
+			-- Update display if panel is open
+			if self.isOpen then
+				self:updateStatsDisplay()
+			end
+		end)
+		print("✅ Connected to server stats updates")
+	else
+		warn("❌ Could not find UpdatePlayerStats RemoteEvent")
+	end
+end
+
+-- Request stats from server
+function StatsTabManager:requestStatsUpdate()
+	if statsUpdateEvent then
+		pcall(function()
+			statsUpdateEvent:FireServer()
+		end)
+		print("📡 Requested stats from server")
+	end
+end
+
+-- ========================================================================
+-- UI CREATION
+-- ========================================================================
+
+function StatsTabManager:createUI()
+	-- Create main GUI
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "PlayerStatsUI"
+	screenGui.ResetOnSpawn = false
+	screenGui.DisplayOrder = 100 -- Above other UIs
+	screenGui.Parent = playerGui
+
+	-- Create main frame (the pull-out panel)
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "StatsPanel"
+	mainFrame.Size = UDim2.new(0, CONFIG.TAB_WIDTH, 0, CONFIG.TAB_HEIGHT)
+	mainFrame.Position = CONFIG.CLOSED_POSITION
+	mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = screenGui
+
+	-- Add corner rounding
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = mainFrame
+
+	-- Add border glow
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(100, 150, 255)
+	stroke.Thickness = 2
+	stroke.Transparency = 0.3
+	stroke.Parent = mainFrame
+
+	-- Create tab button (always visible)
+	local tabButton = Instance.new("TextButton")
+	tabButton.Name = "TabButton"
+	tabButton.Size = UDim2.new(0, 40, 0, 80)
+	tabButton.Position = UDim2.new(0, -40, 0.5, -40)
+	tabButton.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+	tabButton.BorderSizePixel = 0
+	tabButton.Text = "📊"
+	tabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	tabButton.TextSize = 20
+	tabButton.Font = Enum.Font.SourceSansBold
+	tabButton.Parent = mainFrame
+
+	-- Tab button corner
+	local tabCorner = Instance.new("UICorner")
+	tabCorner.CornerRadius = UDim.new(0, 8)
+	tabCorner.Parent = tabButton
+
+	-- Tab button border
+	local tabStroke = Instance.new("UIStroke")
+	tabStroke.Color = Color3.fromRGB(100, 150, 255)
+	tabStroke.Thickness = 2
+	tabStroke.Transparency = 0.3
+	tabStroke.Parent = tabButton
+
+	-- Create header
+	local header = Instance.new("TextLabel")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, -20, 0, 40)
+	header.Position = UDim2.new(0, 10, 0, 10)
+	header.BackgroundTransparency = 1
+	header.Text = "📊 PLAYER STATS"
+	header.TextColor3 = Color3.fromRGB(255, 255, 255)
+	header.TextSize = 18
+	header.Font = Enum.Font.SourceSansBold
+	header.TextXAlignment = Enum.TextXAlignment.Left
+	header.Parent = mainFrame
+
+	-- Create scrolling frame for stats
+	local scrollFrame = Instance.new("ScrollingFrame")
+	scrollFrame.Name = "StatsScroll"
+	scrollFrame.Size = UDim2.new(1, -20, 1, -60)
+	scrollFrame.Position = UDim2.new(0, 10, 0, 50)
+	scrollFrame.BackgroundTransparency = 1
+	scrollFrame.BorderSizePixel = 0
+	scrollFrame.ScrollBarThickness = 0
+	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 150, 255)
+	scrollFrame.Parent = mainFrame
+
+	-- Create stats layout
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Padding = UDim.new(0, 5)
+	listLayout.Parent = scrollFrame
+
+	-- Create stat labels
+	self:createStatLabels(scrollFrame)
+
+	-- Connect tab button
+	tabButton.MouseButton1Click:Connect(function()
+		self:togglePanel()
+	end)
+
+	-- Store references
+	self.gui = screenGui
+	self.mainFrame = mainFrame
+	self.scrollFrame = scrollFrame
+	self.tabButton = tabButton
+
+	print("✅ Player Stats UI created")
+end
+
+function StatsTabManager:createStatLabels(parent)
+	for i, statConfig in ipairs(STAT_DISPLAY) do
+		local statFrame = Instance.new("Frame")
+		statFrame.Name = statConfig.key .. "Frame"
+		statFrame.Size = UDim2.new(1, 0, 0, 25)
+		statFrame.BackgroundTransparency = 1
+		statFrame.LayoutOrder = i
+		statFrame.Parent = parent
+
+		-- Stat label (left side)
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.Size = UDim2.new(0.6, 0, 1, 0)
+		label.Position = UDim2.new(0, 0, 0, 0)
+		label.BackgroundTransparency = 1
+		label.Text = statConfig.label
+		label.TextColor3 = Color3.fromRGB(200, 200, 200)
+		label.TextSize = 14
+		label.Font = Enum.Font.SourceSans
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.Parent = statFrame
+
+		-- Stat value (right side)
+		local value = Instance.new("TextLabel")
+		value.Name = "Value"
+		value.Size = UDim2.new(0.4, 0, 1, 0)
+		value.Position = UDim2.new(0.6, 0, 0, 0)
+		value.BackgroundTransparency = 1
+		value.Text = "..."
+		value.TextColor3 = Color3.fromRGB(255, 255, 255)
+		value.TextSize = 14
+		value.Font = Enum.Font.SourceSansBold
+		value.TextXAlignment = Enum.TextXAlignment.Right
+		value.Parent = statFrame
+
+		-- Store reference
+		self.statLabels[statConfig.key] = {
+			frame = statFrame,
+			label = label,
+			value = value,
+			config = statConfig
+		}
+	end
+
+	-- Update scroll canvas size
+	parent.CanvasSize = UDim2.new(0, 0, 0, #STAT_DISPLAY * 30)
+end
+
+-- ========================================================================
+-- PANEL ANIMATION
+-- ========================================================================
+
+function StatsTabManager:togglePanel()
+	self.isOpen = not self.isOpen
+
+	local targetPosition = self.isOpen and CONFIG.OPEN_POSITION or CONFIG.CLOSED_POSITION
+	local targetText = self.isOpen and "📈" or "📊"
+
+	-- Animate panel
+	local panelTween = TweenService:Create(
+		self.mainFrame,
+		TweenInfo.new(CONFIG.TWEEN_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{Position = targetPosition}
+	)
+
+	-- Animate tab button icon
+	local iconTween = TweenService:Create(
+		self.tabButton,
+		TweenInfo.new(CONFIG.TWEEN_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{Rotation = self.isOpen and 0 or 0} -- Could add rotation here
+	)
+
+	panelTween:Play()
+	iconTween:Play()
+
+	-- Update tab button text
+	self.tabButton.Text = targetText
+
+	-- Update stats when opening
+	if self.isOpen then
+		self:updateStats() -- This will now request from server
+	end
+
+	print(self.isOpen and "📈 Stats panel opened" or "📉 Stats panel closed")
+end
+
+-- ========================================================================
+-- STATS UPDATING
+-- ========================================================================
+
+function StatsTabManager:updateStats()
+	-- Request fresh stats from server
+	self:requestStatsUpdate()
+
+	-- Update display with cached stats if available
+	if self.cachedStats then
+		self:updateStatsDisplay()
+	else
+		self:showNoDataMessage()
+	end
+end
+
+-- Update the display with received stats
+function StatsTabManager:updateStatsDisplay()
+	if not self.cachedStats then
+		self:showNoDataMessage()
+		return
+	end
+
+	local stats = self.cachedStats
+
+	-- Update each stat display
+	for key, labelData in pairs(self.statLabels) do
+		local config = labelData.config
+		local rawValue = stats[key]
+		local displayValue = ""
+
+		if config.type == "boolean" then
+			-- Boolean stats (Yes/No)
+			displayValue = rawValue and "✅ Yes" or "❌ No"
+			labelData.value.TextColor3 = rawValue and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+
+		else
+			-- Numeric stats
+			local value = rawValue or config.default or 0
+
+			-- Format the value
+			if config.format then
+				displayValue = string.format(config.format, value)
+			else
+				displayValue = tostring(value)
+			end
+
+			-- Add suffix if specified
+			if config.suffix then
+				displayValue = displayValue .. config.suffix
+			end
+
+			-- Color coding based on value vs default
+			local defaultVal = config.default or 0
+			if value > defaultVal then
+				labelData.value.TextColor3 = Color3.fromRGB(100, 255, 100) -- Green for improved
+			elseif value < defaultVal then
+				labelData.value.TextColor3 = Color3.fromRGB(255, 100, 100) -- Red for reduced
+			else
+				labelData.value.TextColor3 = Color3.fromRGB(255, 255, 255) -- White for default
+			end
+		end
+
+		labelData.value.Text = displayValue
+	end
+
+	-- Update item count in header
+	local itemCount = stats.itemCount or 0
+	local header = self.mainFrame:FindFirstChild("Header")
+	if header then
+		header.Text = "📊 PLAYER STATS (" .. itemCount .. " items)"
+	end
+
+	print("📊 Updated stats display - Items:", itemCount)
+end
+
+function StatsTabManager:showNoDataMessage()
+	for key, labelData in pairs(self.statLabels) do
+		labelData.value.Text = "N/A"
+		labelData.value.TextColor3 = Color3.fromRGB(150, 150, 150)
+	end
+
+	local header = self.mainFrame:FindFirstChild("Header")
+	if header then
+		header.Text = "📊 PLAYER STATS (Loading...)"
+	end
+end
+
+-- ========================================================================
+-- EVENT HANDLING
+-- ========================================================================
+
+function StatsTabManager:connectEvents()
+	-- Keyboard toggle
+	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+
+		if input.KeyCode == CONFIG.TOGGLE_KEY then
+			self:togglePanel()
+		end
+	end)
+
+	print("🎮 Stats UI controls:")
+	print("  📊 Tab key - Toggle stats panel")
+	print("  🖱️ Click tab button - Toggle stats panel")
+end
+
+-- Auto-request stats updates periodically when panel is open
+function StatsTabManager:startUpdateLoop()
+	task.spawn(function()
+		while self.gui and self.gui.Parent do
+			if self.isOpen then
+				self:requestStatsUpdate() -- Request fresh stats from server
+			end
+			task.wait(CONFIG.UPDATE_INTERVAL) -- Check every 2 seconds when open
+		end
+	end)
+end
+
+-- ========================================================================
+-- CLEANUP
+-- ========================================================================
+
+function StatsTabManager:destroy()
+	if self.gui then
+		self.gui:Destroy()
+	end
+end
+
+-- Handle character respawning
+player.CharacterAdded:Connect(function()
+	task.wait(1) -- Wait for systems to load
+	if statsTab then
+		statsTab:requestStatsUpdate() -- Request fresh stats on respawn
+	end
+end)
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+-- Create the stats tab
+local statsTab = StatsTabManager.new()
+
+-- Make globally accessible for debugging
+_G.StatsTab = statsTab
+
+-- Request stats after a delay to ensure server systems are loaded
+task.spawn(function()
+	task.wait(3)
+	if statsTab then
+		statsTab:requestStatsUpdate()
+		print("🔄 Initial stats request sent")
+	end
+end)
+
+print("✅ Player Stats Pull-Out Tab loaded!")
+print("📋 Features:")
+print("  📊 Shows all upgradeable stats from server")
+print("  🎨 Color-coded improvements (green=better, red=worse)")
+print("  ⌨️ Tab key to toggle")
+print("  🖱️ Click tab button to toggle")
+print("  🔄 Auto-updates from server when open")
+print("  💖 Integrates with ItemEffects system via RemoteEvents")
+print("")
+print("🎮 Press TAB to open stats panel!")
+print("📡 Requesting initial stats from server...")
+
+if not statsUpdateEvent then
+	warn("⚠️ UpdatePlayerStats RemoteEvent not found!")
+	print("💡 Make sure to add the server-side code to ItemEffects.lua")
+end
