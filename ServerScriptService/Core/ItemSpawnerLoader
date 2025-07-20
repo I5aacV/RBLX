@@ -1,0 +1,42 @@
+-- ========================================================================
+-- ITEM SPAWNER LOADER - ServerScript
+-- Place this in ServerScriptService/Core/ItemSpawnerLoader
+-- ========================================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Wait for and load the ItemSpawner module
+local ItemSpawner = require(ReplicatedStorage.Modules.ItemSpawner)
+
+-- Create global instance (ItemSpawner creates its own instance)
+local itemSpawnerInstance = ItemSpawner.new()
+_G.ItemSpawner = itemSpawnerInstance
+
+-- ========================================================================
+-- INTEGRATION WITH ROOM MANAGER
+-- ========================================================================
+
+-- Connect to RoomManager for treasure room spawning
+spawn(function()
+	local attempts = 0
+	while not _G.RoomManager and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.RoomManager then
+		-- Register callback for when treasure rooms are cleared
+		_G.RoomManager:onRoomCleared(function(roomData)
+			if roomData.roomType == "Treasure" then
+				print("🏆 Treasure room cleared, spawning items...")
+				itemSpawnerInstance:onTreasureRoomCreated(roomData.model)
+			end
+		end)
+		print("🔗 Connected ItemSpawner to RoomManager")
+	else
+		print("⚠️ RoomManager not found - manual item spawning only")
+	end
+end)
+
+print("✅ ItemSpawner system loaded and available globally!")
+print("🎁 Item spawning ready for treasure rooms and manual spawning")
