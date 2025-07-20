@@ -1,0 +1,390 @@
+-- ========================================================================
+-- SERVER-SIDE DAMAGE NUMBERS SYSTEM
+-- Place this in ServerScriptService/Systems/DamageNumbersSystem
+-- ========================================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
+
+-- Configuration
+local CONFIG = {
+	-- Visual Settings
+	FONT_SIZE = 24,
+	FONT = Enum.Font.SourceSansBold,
+	ANIMATION_TIME = 1.5,
+	FADE_TIME = 0.5,
+
+	-- Movement Settings
+	RISE_HEIGHT = 8,
+	HORIZONTAL_SPREAD = 3,
+
+	-- Color Settings
+	NORMAL_DAMAGE_COLOR = Color3.fromRGB(255, 255, 255), -- White
+	CRITICAL_DAMAGE_COLOR = Color3.fromRGB(255, 100, 100), -- Red
+	HEAL_COLOR = Color3.fromRGB(100, 255, 100), -- Green
+
+	-- Special Effects
+	CRITICAL_THRESHOLD = 20, -- Damage above this is considered critical
+	SHAKE_INTENSITY = 2,
+	SCALE_MULTIPLIER = 1.2,
+}
+
+-- ========================================================================
+-- DAMAGE NUMBERS MANAGER CLASS
+-- ========================================================================
+
+local DamageNumbersManager = {}
+DamageNumbersManager.__index = DamageNumbersManager
+
+function DamageNumbersManager.new()
+	local self = setmetatable({}, DamageNumbersManager)
+
+	self.activeNumbers = {} -- Track active damage numbers for cleanup
+	self.numberCount = 0 -- For unique naming
+
+	return self
+end
+
+-- ========================================================================
+-- CORE DAMAGE NUMBER CREATION
+-- ========================================================================
+
+-- Create damage number at position
+function DamageNumbersManager:createDamageNumber(position, damage, damageType, targetName)
+	-- Validate inputs
+	if not position or not damage then
+		warn("❌ Invalid damage number parameters")
+		return
+	end
+
+	local isCritical = damage >= CONFIG.CRITICAL_THRESHOLD
+	local isHeal = damageType == "heal"
+
+	-- Determine color and size
+	local textColor = CONFIG.NORMAL_DAMAGE_COLOR
+	local textSize = CONFIG.FONT_SIZE
+	local prefix = "-"
+
+	if isHeal then
+		textColor = CONFIG.HEAL_COLOR
+		prefix = "+"
+	elseif isCritical then
+		textColor = CONFIG.CRITICAL_DAMAGE_COLOR
+		textSize = CONFIG.FONT_SIZE * CONFIG.SCALE_MULTIPLIER
+	end
+
+	-- Create the damage number part
+	local damageNumber = self:createDamageNumberPart(position, damage, textColor, textSize, prefix, isCritical)
+
+	-- Animate the damage number
+	self:animateDamageNumber(damageNumber, isCritical)
+
+	-- Track for cleanup
+	table.insert(self.activeNumbers, damageNumber)
+
+	print("💥 Created damage number:", prefix .. damage, "at", position, "Target:", targetName or "Unknown")
+
+	return damageNumber
+end
+
+-- Create the visual damage number part
+function DamageNumbersManager:createDamageNumberPart(position, damage, textColor, textSize, prefix, isCritical)
+	self.numberCount = self.numberCount + 1
+
+	-- Create invisible part to hold the GUI
+	local part = Instance.new("Part")
+	part.Name = "DamageNumber_" .. self.numberCount
+	part.Size = Vector3.new(0.1, 0.1, 0.1)
+	part.Position = position
+	part.Anchored = true
+	part.CanCollide = false
+	part.Transparency = 1
+	part.Parent = workspace
+
+	-- Create BillboardGui for the text
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "DamageGui"
+	gui.Size = UDim2.new(0, 100, 0, 50)
+	gui.StudsOffset = Vector3.new(0, 2, 0)
+	gui.LightInfluence = 0 -- Make sure it's always visible
+	gui.Parent = part
+
+	-- Create the text label
+	local label = Instance.new("TextLabel")
+	label.Name = "DamageLabel"
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.Position = UDim2.new(0, 0, 0, 0)
+	label.BackgroundTransparency = 1
+	label.Text = prefix .. tostring(damage)
+	label.TextColor3 = textColor
+	label.TextSize = textSize
+	label.TextScaled = false
+	label.Font = CONFIG.FONT
+	label.TextStrokeTransparency = 0
+	label.TextStrokeColor3 = Color3.new(0, 0, 0)
+	label.Parent = gui
+
+	-- Add special effects for critical hits
+	if isCritical then
+		-- Larger text for crits
+		label.TextSize = textSize
+		label.Text = "💥 " .. prefix .. tostring(damage) .. " 💥"
+
+		-- Add glow effect
+		local shadow = label:Clone()
+		shadow.Name = "Shadow"
+		shadow.ZIndex = label.ZIndex - 1
+		shadow.Position = UDim2.new(0, 2, 0, 2)
+		shadow.TextColor3 = Color3.new(0, 0, 0)
+		shadow.TextTransparency = 0.5
+		shadow.TextStrokeTransparency = 1
+		shadow.Parent = gui
+	end
+
+	return part
+end
+
+-- ========================================================================
+-- ANIMATION SYSTEM
+-- ========================================================================
+
+-- Animate damage number with floating and fading
+function DamageNumbersManager:animateDamageNumber(damageNumberPart, isCritical)
+	local gui = damageNumberPart:FindFirstChild("DamageGui")
+	local label = gui and gui:FindFirstChild("DamageLabel")
+
+	if not gui or not label then
+		warn("❌ Damage number components not found")
+		return
+	end
+
+	-- Calculate random horizontal offset
+	local horizontalOffset = (math.random() - 0.5) * CONFIG.HORIZONTAL_SPREAD * 2
+
+	-- Starting position
+	local startPos = damageNumberPart.Position
+	local endPos = startPos + Vector3.new(horizontalOffset, CONFIG.RISE_HEIGHT, 0)
+
+	-- Create movement animation
+	local moveTween = TweenService:Create(
+		damageNumberPart,
+		TweenInfo.new(
+			CONFIG.ANIMATION_TIME,
+			Enum.EasingStyle.Quart,
+			Enum.EasingDirection.Out
+		),
+		{Position = endPos}
+	)
+
+	-- Create fade animation (starts partway through)
+	local fadeDelay = CONFIG.ANIMATION_TIME - CONFIG.FADE_TIME
+	local fadeTween = TweenService:Create(
+		label,
+		TweenInfo.new(
+			CONFIG.FADE_TIME,
+			Enum.EasingStyle.Quart,
+			Enum.EasingDirection.In
+		),
+		{TextTransparency = 1}
+	)
+
+	-- Add critical hit shake effect
+	if isCritical then
+		self:addShakeEffect(damageNumberPart)
+	end
+
+	-- Start animations
+	moveTween:Play()
+
+	-- Start fade after delay
+	task.spawn(function()
+		task.wait(fadeDelay)
+		fadeTween:Play()
+
+		-- Also fade shadow if it exists
+		local shadow = gui:FindFirstChild("Shadow")
+		if shadow then
+			local shadowFade = TweenService:Create(
+				shadow,
+				TweenInfo.new(CONFIG.FADE_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+				{TextTransparency = 1}
+			)
+			shadowFade:Play()
+		end
+	end)
+
+	-- Clean up when animation is complete
+	fadeTween.Completed:Connect(function()
+		self:removeDamageNumber(damageNumberPart)
+	end)
+end
+
+-- Add shake effect for critical hits
+function DamageNumbersManager:addShakeEffect(damageNumberPart)
+	local gui = damageNumberPart:FindFirstChild("DamageGui")
+	if not gui then return end
+
+	-- Create rapid position changes for shake effect
+	task.spawn(function()
+		local originalOffset = gui.StudsOffset
+		local shakeTime = 0.3 -- Duration of shake
+		local shakeRate = 0.05 -- How often to shake
+		local elapsed = 0
+
+		while elapsed < shakeTime do
+			local shakeX = (math.random() - 0.5) * CONFIG.SHAKE_INTENSITY
+			local shakeY = (math.random() - 0.5) * CONFIG.SHAKE_INTENSITY
+
+			gui.StudsOffset = originalOffset + Vector3.new(shakeX, shakeY, 0)
+
+			task.wait(shakeRate)
+			elapsed = elapsed + shakeRate
+		end
+
+		-- Return to original position
+		gui.StudsOffset = originalOffset
+	end)
+end
+
+-- Remove damage number and clean up
+function DamageNumbersManager:removeDamageNumber(damageNumberPart)
+	-- Remove from tracking
+	for i = #self.activeNumbers, 1, -1 do
+		if self.activeNumbers[i] == damageNumberPart then
+			table.remove(self.activeNumbers, i)
+			break
+		end
+	end
+
+	-- Destroy the part
+	if damageNumberPart.Parent then
+		damageNumberPart:Destroy()
+	end
+end
+
+-- ========================================================================
+-- INTEGRATION WITH SHOOTING SYSTEM
+-- ========================================================================
+
+-- Function to be called from your shooting system
+function DamageNumbersManager:showDamage(enemy, damage, hitPosition, damageType)
+	-- Validate inputs
+	if not enemy or not damage or not hitPosition then
+		warn("❌ Invalid damage display parameters")
+		return
+	end
+
+	-- Offset the position slightly above the hit point
+	local displayPosition = hitPosition + Vector3.new(0, 2, 0)
+
+	-- Create the damage number
+	self:createDamageNumber(displayPosition, damage, damageType or "normal", enemy.Name)
+end
+
+-- Function for healing numbers
+function DamageNumbersManager:showHeal(target, healAmount, position)
+	self:showDamage(target, healAmount, position, "heal")
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+-- Clean up all active damage numbers (for debugging)
+function DamageNumbersManager:clearAllNumbers()
+	for _, damageNumber in pairs(self.activeNumbers) do
+		if damageNumber.Parent then
+			damageNumber:Destroy()
+		end
+	end
+	self.activeNumbers = {}
+	print("🧹 Cleared all damage numbers")
+end
+
+-- Get count of active damage numbers
+function DamageNumbersManager:getActiveCount()
+	return #self.activeNumbers
+end
+
+-- Force show test damage number
+function DamageNumbersManager:testDamageNumber(position, damage, damageType)
+	position = position or Vector3.new(0, 10, 0)
+	damage = damage or 15
+	damageType = damageType or "normal"
+
+	self:createDamageNumber(position, damage, damageType, "TestTarget")
+	print("🧪 Created test damage number:", damage, "at", position)
+end
+
+-- ========================================================================
+-- INTEGRATION SETUP
+-- ========================================================================
+
+-- Create global instance
+local damageNumbersManager = DamageNumbersManager.new()
+_G.DamageNumbers = damageNumbersManager
+
+-- ========================================================================
+-- MODIFY YOUR EXISTING SHOOTING HANDLER
+-- ========================================================================
+
+-- Find and enhance your existing shooting handler
+local shootRemote = ReplicatedStorage:FindFirstChild("IsaacShootRemote")
+if shootRemote then
+	print("🔗 Integrating damage numbers with existing shooting system...")
+
+	-- Store the original connections (we'll need to replace them)
+	-- You'll need to update your ShootingServerHandler to use this system
+else
+	warn("⚠️ IsaacShootRemote not found - damage numbers won't integrate automatically")
+	print("💡 Make sure to call _G.DamageNumbers:showDamage() in your shooting handler")
+end
+
+-- ========================================================================
+-- DEBUG COMMANDS
+-- ========================================================================
+
+-- Global debug functions
+_G.TestDamageNumbers = function()
+	local testPos = Vector3.new(0, 10, 0)
+	damageNumbersManager:testDamageNumber(testPos, 10, "normal")
+	damageNumbersManager:testDamageNumber(testPos + Vector3.new(5, 0, 0), 25, "critical")
+	damageNumbersManager:testDamageNumber(testPos + Vector3.new(-5, 0, 0), 8, "heal")
+	print("🧪 Created test damage numbers")
+end
+
+_G.ClearDamageNumbers = function()
+	damageNumbersManager:clearAllNumbers()
+end
+
+_G.DamageNumbersStatus = function()
+	print("📊 DAMAGE NUMBERS STATUS:")
+	print("💥 Active numbers:", damageNumbersManager:getActiveCount())
+	print("🎯 Total created:", damageNumbersManager.numberCount)
+end
+
+-- ========================================================================
+-- INITIALIZATION COMPLETE
+-- ========================================================================
+
+print("✅ Server-Side Damage Numbers System loaded!")
+print("📋 Features:")
+print("  ✅ Server-side damage numbers visible to all players")
+print("  ✅ Critical hit detection and effects")
+print("  ✅ Healing number support")
+print("  ✅ Smooth animations with fade and float")
+print("  ✅ Shake effects for critical hits")
+print("  ✅ Auto-cleanup system")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.TestDamageNumbers() - Show test damage numbers")
+print("  _G.ClearDamageNumbers() - Clear all active numbers")
+print("  _G.DamageNumbersStatus() - Show system status")
+print("")
+print("🎯 Integration:")
+print("  Call _G.DamageNumbers:showDamage(enemy, damage, hitPosition)")
+print("  Call _G.DamageNumbers:showHeal(target, healAmount, position)")
+
+return damageNumbersManager
