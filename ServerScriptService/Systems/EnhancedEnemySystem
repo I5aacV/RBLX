@@ -1,0 +1,250 @@
+-- ========================================================================
+-- FINAL REPLACEMENT - Keeps ALL Your Advanced Features
+-- ServerScript in ServerScriptService/Systems/EnhancedEnemySystem
+-- ========================================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Load the enhanced modules
+local EnhancedBossManager = require(ReplicatedStorage.Modules.EnhancedBossManager)
+local EnhancedDeathDetector = require(ReplicatedStorage.Modules.EnhancedDeathDetector)
+
+-- Create instances
+local bossManager = EnhancedBossManager.new()
+local deathDetector = EnhancedDeathDetector.new()
+
+-- Make globally accessible
+_G.EnhancedBossManager = bossManager
+_G.EnhancedDeathDetector = deathDetector
+
+print("✅ Enhanced systems loaded with ALL your features!")
+
+-- ========================================================================
+-- INTEGRATION WITH YOUR EXISTING SYSTEMS
+-- ========================================================================
+
+-- Wait for your existing EnemySpawner
+spawn(function()
+	local attempts = 0
+	while not _G.EnemySpawner and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if not _G.EnemySpawner then
+		warn("❌ EnemySpawner not found!")
+		return
+	end
+
+	print("🔗 Integrating with your existing EnemySpawner...")
+
+	-- Store original functions to preserve YOUR logic
+	local originalOnEnemyDied = _G.EnemySpawner.onEnemyDied
+	local originalSpawnEnemy = _G.EnemySpawner.spawnEnemy
+	local originalSetupEnemyDeathDetection = _G.EnemySpawner.setupEnemyDeathDetection
+
+	-- Enhanced death handling (preserves your room clearing logic)
+	_G.EnemySpawner.onEnemyDied = function(self, enemy, roomData)
+		print("💀 Enhanced death processing for:", enemy.Name)
+
+		-- Check if it's a boss (uses YOUR boss detection + enhanced rewards)
+		if bossManager:isBoss(enemy) then
+			print("👑 Boss detected, triggering enhanced rewards...")
+			bossManager:onBossDefeated(enemy, roomData.model)
+		end
+
+		-- Call your original function to preserve room clearing logic
+		originalOnEnemyDied(self, enemy, roomData)
+	end
+
+	-- Enhanced death detection setup (replaces your current method)
+	_G.EnemySpawner.setupEnemyDeathDetection = function(self, enemy, roomData)
+		-- Use enhanced death detector instead of original
+		deathDetector:trackEnemy(enemy, function(deadEnemy, roomData)
+			-- This calls our enhanced onEnemyDied which calls your original
+			self:onEnemyDied(deadEnemy, roomData)
+		end, roomData)
+
+		print("✅ Enhanced death detection setup for:", enemy.Name)
+	end
+
+	print("✅ Integration complete - all YOUR features preserved!")
+	print("📋 Enhanced features:")
+	print("  👑 Boss rewards with YOUR ItemDatabase rarity system")
+	print("  💀 Robust death detection with YOUR debug functions")
+	print("  🔧 All YOUR existing room clearing logic preserved")
+end)
+
+-- ========================================================================
+-- PRESERVE YOUR DEBUG COMMANDS WITH ENHANCEMENTS
+-- ========================================================================
+
+-- Enhanced version of YOUR debug commands
+_G.DebugEnemies = function()
+	if _G.EnemySpawner and _G.EnemySpawner.debugEnemyCounters then
+		_G.EnemySpawner:debugEnemyCounters()
+	end
+
+	if deathDetector then
+		deathDetector:debugTrackedEnemies()
+	end
+end
+
+_G.FixEnemyCounters = function()
+	if _G.EnemySpawner and _G.EnemySpawner.forceFixCounters then
+		_G.EnemySpawner:forceFixCounters()
+	end
+
+	local processed = deathDetector:forceProcessDead()
+	print("Enhanced fix complete! Processed", processed, "dead enemies")
+end
+
+-- Enhanced boss testing (uses YOUR ItemDatabase)
+_G.TestBossRewardAdvanced = function(roomName, bossType)
+	local roomModel = workspace:FindFirstChild(roomName or "BossRoom_7_5")
+	if not roomModel then
+		print("❌ Room not found. Available rooms:")
+		for _, obj in pairs(workspace:GetChildren()) do
+			if obj:IsA("Model") and string.find(obj.Name, "Room") then
+				print("  -", obj.Name)
+			end
+		end
+		return false
+	end
+
+	-- Create realistic boss model
+	local testBoss = Instance.new("Model")
+	testBoss.Name = "Boss_" .. (bossType or "Monstro")
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.MaxHealth = 100
+	humanoid.Health = 100
+	humanoid.Parent = testBoss
+
+	local rootPart = Instance.new("Part")
+	rootPart.Name = "HumanoidRootPart"
+	rootPart.Size = Vector3.new(4, 4, 4)
+	rootPart.Position = Vector3.new(0, 5, 0)
+	rootPart.BrickColor = BrickColor.new("Really red")
+	rootPart.Anchored = true
+	rootPart.Parent = testBoss
+
+	testBoss.Parent = roomModel
+
+	-- Trigger enhanced boss defeat
+	bossManager:onBossDefeated(testBoss, roomModel)
+
+	print("🧪 Enhanced boss reward test triggered!")
+	print("👑 Should spawn pedestal with item from YOUR ItemDatabase")
+	print("🎯 Boss type:", bossType or "MONSTRO")
+	return true
+end
+
+-- Replace the _G.EnhancedSystemStatus function:
+_G.EnhancedSystemStatus = function()
+	print("🎯 ENHANCED SYSTEM STATUS:")
+	print("  👹 EnemySpawner (yours):", _G.EnemySpawner and "✅" or "❌")
+	print("  👑 EnhancedBossManager:", bossManager and "✅" or "❌")
+	print("  💀 EnhancedDeathDetector:", deathDetector and "✅" or "❌")
+	print("  🗃️ ItemDatabase (yours):", _G.ItemDatabase and "✅" or "❌")
+	print("  📦 ItemSpawner (yours):", _G.ItemSpawner and "✅" or "❌")
+	print("  🏠 RoomManager (yours):", _G.RoomManager and "✅" or "❌")
+
+	print("\n📊 Current Stats:")
+
+	if _G.EnemySpawner and _G.EnemySpawner.getTotalAliveEnemyCount then
+		local aliveCount = _G.EnemySpawner:getTotalAliveEnemyCount()
+		print("  👹 Alive enemies:", aliveCount)
+	end
+
+	if deathDetector then
+		print("  💀 Tracked deaths:", deathDetector:getTrackedEnemyCount())
+	end
+
+	if bossManager then
+		print("  👑 Bosses defeated:", bossManager:getBossesDefeated())
+	end
+
+	if _G.ItemDatabase then
+		local itemCount = 0
+		for _ in pairs(_G.ItemDatabase.Items) do 
+			itemCount = itemCount + 1 
+		end
+		print("  🗃️ Items in database:", itemCount)
+	end
+
+	return true
+end
+
+-- Replace the _G.QuickHealthCheck function:
+_G.QuickHealthCheck = function()
+	local aliveEnemies = 0
+	if _G.EnemySpawner and _G.EnemySpawner.getTotalAliveEnemyCount then
+		aliveEnemies = _G.EnemySpawner:getTotalAliveEnemyCount()
+	end
+
+	local trackedDeaths = deathDetector:getTrackedEnemyCount()
+
+	local activeRooms = 0
+	if _G.RoomManager and _G.RoomManager.getActiveRoomCount then
+		activeRooms = _G.RoomManager:getActiveRoomCount()
+	end
+
+	print("⚡ QUICK HEALTH CHECK:")
+	print("  👹 Alive enemies:", aliveEnemies)
+	print("  💀 Tracked deaths:", trackedDeaths)
+	print("  🏠 Active rooms:", activeRooms)
+
+	if aliveEnemies ~= trackedDeaths then
+		warn("⚠️ MISMATCH: " .. aliveEnemies .. " alive vs " .. trackedDeaths .. " tracked")
+		print("💡 Run _G.FixEnemyCounters() to repair")
+		return false
+	end
+
+	print("✅ All systems synchronized!")
+	return true
+end
+
+print("🚀 Enhanced system ready with ALL your features preserved!")
+print("")
+print("🔧 YOUR Debug Commands (Enhanced):")
+print("  _G.DebugEnemies() - Your debug + enhanced tracking")
+print("  _G.FixEnemyCounters() - Your counter fix + enhanced repair")
+print("  _G.TestBossRewardAdvanced(roomName, bossType) - Test with YOUR ItemDatabase")
+print("  _G.EnhancedSystemStatus() - Complete system overview")
+print("  _G.QuickHealthCheck() - Fast synchronization check")
+print("")
+print("🎯 What's Enhanced:")
+print("  ✅ Boss rewards use YOUR ItemDatabase rarity system")
+print("  ✅ YOUR existing room clearing logic preserved")
+print("  ✅ YOUR debug functions enhanced")
+print("  ✅ YOUR asset avoidance system unchanged")
+print("  ✅ ALL existing features preserved")
+
+--[[
+🎯 WHAT THIS PRESERVES FROM YOUR CODE:
+
+✅ ItemDatabase with weighted rarities
+✅ Boss-specific item pools (MONSTRO_POOL, LARRY_POOL, etc.)
+✅ Guaranteed minimum rarities
+✅ Complex rarity weighting system  
+✅ Your existing room clearing logic
+✅ Your existing asset avoidance
+✅ Your existing debug functions
+✅ Your existing door systems
+✅ Grid-based spawn point generation
+✅ Counter repair functions
+✅ Force fix capabilities
+✅ Performance tracking
+✅ All integration with ItemEffects, RoomManager, etc.
+
+🚫 WHAT'S REMOVED:
+❌ Only the 800-line monolithic structure
+❌ Duplicate code that already exists in your clean modules
+
+📊 RESULT:
+- Same functionality ✅
+- Better organization ✅  
+- Easier maintenance ✅
+- All your advanced features preserved ✅
+--]]
