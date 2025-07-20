@@ -1,1 +1,26 @@
+-- ========================================================================
+-- ITEM EFFECTS LOADER - ServerScript
+-- Place this in ServerScriptService (name it: ItemEffectsLoader)
+-- ========================================================================
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- Wait for and load the ItemEffects module
+local ItemEffects = require(ReplicatedStorage.Modules.ItemEffects)
+
+-- Make it globally accessible
+_G.ItemEffects = ItemEffects
+
+-- Initialize existing players
+for _, player in pairs(Players:GetPlayers()) do
+	ItemEffects:InitializePlayer(player)
+end
+
+-- Initialize new players
+Players.PlayerAdded:Connect(function(player)
+	ItemEffects:InitializePlayer(player)
+end)
+
+print("✅ ItemEffects system loaded and available globally!")
+print("🎮 Players will now be initialized with item system")
