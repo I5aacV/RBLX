@@ -1,0 +1,386 @@
+-- Heart System Script (Place in StarterGui or StarterPlayerScripts)
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Configuration
+local MAX_HEARTS = 3  -- Maximum number of hearts
+local HEARTS_PER_ROW = 6  -- Hearts per row before wrapping
+local HEART_SIZE = UDim2.new(0, 32, 0, 32)  -- Size of each heart
+local HEART_PADDING = 2  -- Padding between hearts
+
+-- Heart System Class
+local HeartSystem = {}
+HeartSystem.__index = HeartSystem
+
+function HeartSystem.new()
+	local self = setmetatable({}, HeartSystem)
+
+	self.maxHearts = MAX_HEARTS
+	self.currentHits = MAX_HEARTS * 2  -- Each heart = 2 hits
+	self.heartFrames = {}
+	self.gui = nil
+
+	-- I-FRAME PROPERTIES
+	self.isInvincible = false
+	self.iframeTime = 0.75  -- 0.5 seconds of invincibility after taking damage
+	self.iframeFlashSpeed = 0.1  -- How fast to flash during i-frames
+
+	self:createGUI()
+	self:connectHealthEvents()
+
+	return self
+end
+
+function HeartSystem:createGUI()
+	-- Create main GUI
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "HeartSystemGUI"
+	screenGui.ResetOnSpawn = false
+	screenGui.Parent = playerGui
+
+	-- Create main frame
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "HeartFrame"
+	mainFrame.Size = UDim2.new(0, 200, 0, 100)
+	mainFrame.Position = UDim2.new(0, 10, 0, 10)
+	mainFrame.BackgroundTransparency = 1
+	mainFrame.Parent = screenGui
+
+	self.gui = screenGui
+	self.mainFrame = mainFrame
+
+	-- Create heart frames
+	for i = 1, self.maxHearts do
+		local heartFrame = self:createHeartFrame(i)
+		heartFrame.Parent = mainFrame
+		table.insert(self.heartFrames, heartFrame)
+	end
+
+	self:updateHeartDisplay()
+end
+
+function HeartSystem:createHeartFrame(index)
+	local heartFrame = Instance.new("Frame")
+	heartFrame.Name = "Heart" .. index
+	heartFrame.Size = HEART_SIZE
+	heartFrame.BackgroundTransparency = 1
+
+	-- Calculate position (grid layout)
+	local row = math.floor((index - 1) / HEARTS_PER_ROW)
+	local col = (index - 1) % HEARTS_PER_ROW
+
+	local xPos = col * (HEART_SIZE.X.Offset + HEART_PADDING)
+	local yPos = row * (HEART_SIZE.Y.Offset + HEART_PADDING)
+
+	heartFrame.Position = UDim2.new(0, xPos, 0, yPos)
+
+	-- Create heart image (filled/full)
+	local filledHeart = Instance.new("ImageLabel")
+	filledHeart.Name = "FilledHeart"
+	filledHeart.Size = UDim2.new(1, 0, 1, 0)
+	filledHeart.BackgroundTransparency = 1
+	filledHeart.Image = "http://www.roblox.com/asset/?id=119232510808280" -- Replace with full heart image
+	filledHeart.Parent = heartFrame
+
+	-- Create heart image (half)
+	local halfHeart = Instance.new("ImageLabel")
+	halfHeart.Name = "HalfHeart"
+	halfHeart.Size = UDim2.new(1, 0, 1, 0)
+	halfHeart.BackgroundTransparency = 1
+	halfHeart.Image = "http://www.roblox.com/asset/?id=103530431898201" -- Replace with half heart image
+	halfHeart.Visible = false
+	halfHeart.Parent = heartFrame
+
+	-- Create heart image (empty)
+	local emptyHeart = Instance.new("ImageLabel")
+	emptyHeart.Name = "EmptyHeart"
+	emptyHeart.Size = UDim2.new(1, 0, 1, 0)
+	emptyHeart.BackgroundTransparency = 1
+	emptyHeart.Image = "http://www.roblox.com/asset/?id=96920951122696" -- Replace with empty heart image
+	emptyHeart.Visible = false
+	emptyHeart.Parent = heartFrame
+
+	return heartFrame
+end
+
+function HeartSystem:updateHeartDisplay()
+	for i, heartFrame in ipairs(self.heartFrames) do
+		local filledHeart = heartFrame:FindFirstChild("FilledHeart")
+		local halfHeart = heartFrame:FindFirstChild("HalfHeart")
+		local emptyHeart = heartFrame:FindFirstChild("EmptyHeart")
+
+		-- Calculate hits remaining for this heart
+		local hitsForThisHeart = math.max(0, self.currentHits - ((i - 1) * 2))
+
+		if hitsForThisHeart >= 2 then
+			-- Show full heart (2 hits remaining)
+			filledHeart.Visible = true
+			halfHeart.Visible = false
+			emptyHeart.Visible = false
+		elseif hitsForThisHeart == 1 then
+			-- Show half heart (1 hit remaining)
+			filledHeart.Visible = false
+			halfHeart.Visible = true
+			emptyHeart.Visible = false
+		else
+			-- Show empty heart (0 hits remaining)
+			filledHeart.Visible = false
+			halfHeart.Visible = false
+			emptyHeart.Visible = true
+		end
+	end
+end
+
+function HeartSystem:setHits(hits)
+	hits = math.max(0, math.min(hits, self.maxHearts * 2))
+
+	if hits ~= self.currentHits then
+		local oldHits = self.currentHits
+		self.currentHits = hits
+
+		-- Animate heart changes
+		if hits < oldHits then
+			-- Lost hits - animate the affected hearts
+			self:animateHeartChange(oldHits, hits)
+		else
+			-- Gained hits - animate the affected hearts
+			self:animateHeartChange(oldHits, hits)
+		end
+
+		self:updateHeartDisplay()
+	end
+end
+
+function HeartSystem:animateHeartChange(oldHits, newHits)
+	-- Find which hearts were affected
+	local oldHeartIndex = math.ceil(oldHits / 2)
+	local newHeartIndex = math.ceil(newHits / 2)
+
+	-- Animate the heart that changed
+	local heartIndex = math.max(oldHeartIndex, newHeartIndex)
+	if heartIndex > 0 and heartIndex <= self.maxHearts then
+		local heartFrame = self.heartFrames[heartIndex]
+		if heartFrame then
+			-- Create a pulse effect
+			local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			local scaleTween = TweenService:Create(heartFrame, tweenInfo, {
+				Size = UDim2.new(0, HEART_SIZE.X.Offset * 1.2, 0, HEART_SIZE.Y.Offset * 1.2)
+			})
+			scaleTween:Play()
+
+			scaleTween.Completed:Connect(function()
+				local scaleBackTween = TweenService:Create(heartFrame, tweenInfo, {
+					Size = HEART_SIZE
+				})
+				scaleBackTween:Play()
+			end)
+		end
+	end
+end
+
+function HeartSystem:connectHealthEvents()
+	-- Wait for character to spawn
+	local function onCharacterAdded(character)
+		local humanoid = character:WaitForChild("Humanoid")
+
+		-- Set custom max health (each hit = 5 health, each heart = 10 health)
+		humanoid.MaxHealth = self.maxHearts * 10
+
+		-- FIX: Wait a frame and then set health to max and reset hearts
+		task.wait(0.1) -- Small delay to ensure MaxHealth is processed
+		humanoid.Health = humanoid.MaxHealth
+		self.currentHits = self.maxHearts * 2  -- Reset to full hearts
+		self.isInvincible = false  -- Reset i-frames on respawn
+		self:updateHeartDisplay()  -- Update the visual display
+
+		print("Character respawned - Health set to:", humanoid.Health, "Hearts reset to:", self.currentHits)
+
+		-- Connect to health changes
+		humanoid.HealthChanged:Connect(function(health)
+			-- FIX: Better health-to-hits calculation
+			local maxHealth = humanoid.MaxHealth
+			local healthPercentage = health / maxHealth
+			local maxHits = self.maxHearts * 2
+
+			-- Calculate hits based on health percentage
+			local hits = math.ceil(healthPercentage * maxHits)
+
+			-- Ensure we don't go below 0 or above max
+			hits = math.max(0, math.min(hits, maxHits))
+
+			self:setHits(hits)
+			print("Health changed to:", health, "Health %:", math.floor(healthPercentage * 100), "Hits calculated:", hits)
+		end)
+
+		-- Handle death
+		humanoid.Died:Connect(function()
+			self:setHits(0)
+			self.isInvincible = false  -- Reset i-frames on death
+			print("Player died - Hearts set to 0")
+		end)
+	end
+
+	-- Connect to character spawning
+	if player.Character then
+		onCharacterAdded(player.Character)
+	end
+	player.CharacterAdded:Connect(onCharacterAdded)
+end
+
+function HeartSystem:takeDamage(hits)
+	-- Check if player is invincible
+	if self.isInvincible then
+		print("Player is invincible - damage ignored")
+		return false  -- Return false to indicate damage was blocked
+	end
+
+	hits = hits or 1
+	local newHits = math.max(0, self.currentHits - hits)
+	self:setHits(newHits)
+
+	-- Start i-frames
+	self:startIFrames()
+
+	-- Also update actual health
+	if player.Character and player.Character:FindFirstChild("Humanoid") then
+		local humanoid = player.Character.Humanoid
+		humanoid.Health = math.max(humanoid.Health - (hits * 5), 0)
+	end
+
+	return true  -- Return true to indicate damage was taken
+end
+
+function HeartSystem:startIFrames()
+	if self.isInvincible then
+		return  -- Already invincible
+	end
+
+	self.isInvincible = true
+	print("I-frames started for", self.iframeTime, "seconds")
+
+	-- Start flashing effect
+	self:startFlashing()
+
+	-- End i-frames after the specified time using spawn to not block
+	spawn(function()
+		task.wait(self.iframeTime)
+		self.isInvincible = false
+		self:stopFlashing()
+		print("I-frames ended")
+	end)
+end
+
+function HeartSystem:startFlashing()
+	-- Create flashing effect for visual feedback
+	spawn(function()
+		while self.isInvincible do
+			-- Flash the heart images (make them semi-transparent)
+			for _, heartFrame in pairs(self.heartFrames) do
+				for _, child in pairs(heartFrame:GetChildren()) do
+					if child:IsA("ImageLabel") then
+						local tween = TweenService:Create(child, 
+							TweenInfo.new(self.iframeFlashSpeed, Enum.EasingStyle.Linear), 
+							{ImageTransparency = 0.7}
+						)
+						tween:Play()
+					end
+				end
+			end
+
+			task.wait(self.iframeFlashSpeed)
+
+			-- Return to normal
+			for _, heartFrame in pairs(self.heartFrames) do
+				for _, child in pairs(heartFrame:GetChildren()) do
+					if child:IsA("ImageLabel") then
+						local tween = TweenService:Create(child, 
+							TweenInfo.new(self.iframeFlashSpeed, Enum.EasingStyle.Linear), 
+							{ImageTransparency = 0}
+						)
+						tween:Play()
+					end
+				end
+			end
+
+			task.wait(self.iframeFlashSpeed)
+		end
+	end)
+end
+
+function HeartSystem:stopFlashing()
+	-- Ensure hearts are back to normal transparency
+	for _, heartFrame in pairs(self.heartFrames) do
+		for _, child in pairs(heartFrame:GetChildren()) do
+			if child:IsA("ImageLabel") then
+				child.ImageTransparency = 0
+			end
+		end
+	end
+end
+
+function HeartSystem:heal(hits)
+	hits = hits or 1
+	local newHits = math.min(self.maxHearts * 2, self.currentHits + hits)
+	self:setHits(newHits)
+
+	-- Also update actual health
+	if player.Character and player.Character:FindFirstChild("Humanoid") then
+		local humanoid = player.Character.Humanoid
+		humanoid.Health = math.min(humanoid.Health + (hits * 5), humanoid.MaxHealth)
+	end
+end
+
+function HeartSystem:addFullHeart()
+	self:heal(2)  -- Heal 2 hits = 1 full heart
+end
+
+function HeartSystem:removeFullHeart()
+	self:takeDamage(2)  -- Take 2 hits = 1 full heart
+end
+
+-- Create the heart system
+local heartSystem = HeartSystem.new()
+
+-- Make it globally accessible
+_G.HeartSystem = heartSystem
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Wait for the remote event to be created
+local remoteEvent = ReplicatedStorage:WaitForChild("SpikeHeartDamage")
+
+-- Handle damage from server
+remoteEvent.OnClientEvent:Connect(function(hits)
+	if heartSystem then
+		heartSystem:takeDamage(hits)
+		print("Received spike damage:", hits, "hits")
+	end
+end)
+
+-- Test controls
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	if input.KeyCode == Enum.KeyCode.H then
+		-- Press H to heal 1 hit
+		heartSystem:heal(1)
+		print("Healed 1 hit - Current hits: " .. heartSystem.currentHits)
+	elseif input.KeyCode == Enum.KeyCode.J then
+		-- Press J to take 1 hit of damage
+		heartSystem:takeDamage(1)
+		print("Took 1 hit - Current hits: " .. heartSystem.currentHits)
+	elseif input.KeyCode == Enum.KeyCode.K then
+		-- Press K to heal full heart (2 hits)
+		heartSystem:addFullHeart()
+		print("Healed full heart - Current hits: " .. heartSystem.currentHits)
+	elseif input.KeyCode == Enum.KeyCode.L then
+		-- Press L to lose full heart (2 hits)
+		heartSystem:removeFullHeart()
+		print("Lost full heart - Current hits: " .. heartSystem.currentHits)
+	end
+end)
