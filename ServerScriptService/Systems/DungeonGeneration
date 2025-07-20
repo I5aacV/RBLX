@@ -1,0 +1,625 @@
+-- COMPLETE DUNGEON GENERATOR WITH AUTO CAMERA SYSTEM
+-- Place this in ServerScriptService
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+
+-- Grid Configuration - ADJUST THESE FOR PERFECT ALIGNMENT
+local ROOM_WIDTH = 120   -- Width of each room in studs (X dimension)
+local ROOM_HEIGHT = 80   -- Height of each room in studs (Z dimension)
+local GRID_SIZE = 13     -- 13x13 grid like Isaac
+local ROOM_SPACING = 4   -- Space between rooms (set to 0 for perfect rectangles touching)
+
+-- Camera Configuration
+local TRIGGER_SIZE_MULTIPLIER = 0.9  -- Trigger covers 90% of room size
+local FOCUS_HEIGHT_OFFSET = 5  -- Focus point height above room floor
+
+-- Grid Visualization (optional - helps see the grid in Studio)
+local SHOW_GRID_GUIDES = true  -- Set to false to hide grid visualization
+
+-- Room Types
+local RoomTypes = {
+	SPAWN = "Spawn",
+	NORMAL = "Normal", 
+	BOSS = "Boss",
+	TREASURE = "Treasure",
+	SHOP = "Shop"
+}
+
+-- Enhanced Dungeon Generator with Perfect Grid and Auto Camera
+local DungeonGenerator = {}
+DungeonGenerator.__index = DungeonGenerator
+
+function DungeonGenerator.new()
+	local self = setmetatable({}, DungeonGenerator)
+
+	self.grid = {}  -- 2D array to store room data
+	self.rooms = {}  -- Array of actual room instances
+	self.roomTemplates = {}  -- Storage for room templates
+	self.gridOrigin = Vector3.new(0, 0, 0)  -- World position of grid center
+
+	-- Initialize empty grid
+	for x = 1, GRID_SIZE do
+		self.grid[x] = {}
+		for y = 1, GRID_SIZE do
+			self.grid[x][y] = nil
+		end
+	end
+
+	self:loadRoomTemplates()
+
+	if SHOW_GRID_GUIDES then
+		self:createGridVisualization()
+	end
+
+	return self
+end
+
+-- Create visual grid guides (helpful for setup)
+function DungeonGenerator:createGridVisualization()
+	local gridFolder = Instance.new("Folder")
+	gridFolder.Name = "GridGuides"
+	gridFolder.Parent = workspace
+
+	print("Creating grid visualization...")
+
+	for x = 1, GRID_SIZE do
+		for y = 1, GRID_SIZE do
+			local worldPos = self:gridToWorldPosition(x, y)
+
+			-- Create a thin part to show grid position
+			local guide = Instance.new("Part")
+			guide.Name = "GridGuide_" .. x .. "_" .. y
+			guide.Size = Vector3.new(ROOM_WIDTH - 2, 0.1, ROOM_HEIGHT - 2)
+			guide.Position = worldPos
+			guide.Anchored = true
+			guide.CanCollide = false
+			guide.Transparency = 0.8
+			guide.BrickColor = BrickColor.new("Bright blue")
+			guide.Material = Enum.Material.Neon
+			guide.Parent = gridFolder
+
+			-- Add text label for grid coordinates
+			local surfaceGui = Instance.new("SurfaceGui")
+			surfaceGui.Face = Enum.NormalId.Top
+			surfaceGui.Parent = guide
+
+			local textLabel = Instance.new("TextLabel")
+			textLabel.Size = UDim2.new(1, 0, 1, 0)
+			textLabel.BackgroundTransparency = 1
+			textLabel.Text = x .. "," .. y
+			textLabel.TextColor3 = Color3.new(1, 1, 1)
+			textLabel.TextScaled = true
+			textLabel.Font = Enum.Font.SourceSansBold
+			textLabel.Parent = surfaceGui
+		end
+	end
+
+	print("Grid visualization created! You can delete the 'GridGuides' folder when done.")
+end
+
+-- Perfect grid position calculation
+function DungeonGenerator:gridToWorldPosition(gridX, gridY)
+	-- Calculate center offset (grid position 7,7 = world center for 13x13 grid)
+	local centerGridX = math.ceil(GRID_SIZE / 2)
+	local centerGridY = math.ceil(GRID_SIZE / 2)
+
+	-- Convert grid coordinates to world offset from center using rectangular dimensions
+	local offsetX = (gridX - centerGridX) * (ROOM_WIDTH + ROOM_SPACING)
+	local offsetZ = (gridY - centerGridY) * (ROOM_HEIGHT + ROOM_SPACING)
+
+	-- Return world position
+	return self.gridOrigin + Vector3.new(offsetX, 0, offsetZ)
+end
+
+-- Create camera trigger for a room
+function DungeonGenerator:createCameraTrigger(roomData)
+	local roomWorldPos = roomData.worldPosition
+	local roomID = roomData.roomType .. "Room_" .. roomData.gridX .. "_" .. roomData.gridY
+
+	-- Create trigger part using rectangular dimensions
+	local trigger = Instance.new("Part")
+	trigger.Name = "CameraTrigger"
+	trigger.Size = Vector3.new(ROOM_WIDTH * TRIGGER_SIZE_MULTIPLIER, 10, ROOM_HEIGHT * TRIGGER_SIZE_MULTIPLIER)
+	trigger.Position = roomWorldPos + Vector3.new(0, 5, 0)  -- Slightly above floor
+	trigger.Anchored = true
+	trigger.CanCollide = false
+	trigger.Transparency = 1  -- Invisible
+	trigger.Parent = roomData.model
+
+	-- Add tag and room ID attribute
+	CollectionService:AddTag(trigger, "RoomTrigger")
+	trigger:SetAttribute("RoomID", roomID)
+
+	print("Created camera trigger for room:", roomID)
+	return trigger
+end
+
+-- Create camera focus point for a room
+function DungeonGenerator:createCameraFocus(roomData)
+	local roomWorldPos = roomData.worldPosition
+	local roomID = roomData.roomType .. "Room_" .. roomData.gridX .. "_" .. roomData.gridY
+
+	-- Create focus point part
+	local focus = Instance.new("Part")
+	focus.Name = "CameraFocus"
+	focus.Size = Vector3.new(1, 1, 1)
+	focus.Position = roomWorldPos + Vector3.new(0, FOCUS_HEIGHT_OFFSET, 0)
+	focus.Anchored = true
+	focus.CanCollide = false
+	focus.Transparency = 1  -- Invisible
+	focus.Parent = roomData.model
+
+	-- Add tag and room ID attribute
+	CollectionService:AddTag(focus, "RoomFocus")
+	focus:SetAttribute("RoomID", roomID)
+
+	print("Created camera focus for room:", roomID)
+	return focus
+end
+
+function DungeonGenerator:createRoom(gridX, gridY, roomType)
+	-- Check bounds
+	if gridX < 1 or gridX > GRID_SIZE or gridY < 1 or gridY > GRID_SIZE then
+		return nil
+	end
+
+	-- Check if room already exists
+	if self.grid[gridX][gridY] then
+		return self.grid[gridX][gridY]
+	end
+
+	-- Get template for this room type
+	local template = self:getRoomTemplate(roomType)
+	if not template then
+		print("No template found for room type:", roomType)
+		return nil
+	end
+
+	-- Clone template
+	local newRoom = template:Clone()
+	newRoom.Name = roomType .. "Room_" .. gridX .. "_" .. gridY
+	newRoom.Parent = workspace
+
+	-- PERFECT GRID POSITIONING
+	local targetWorldPos = self:gridToWorldPosition(gridX, gridY)
+
+	-- Method 1: Use PrimaryPart if available
+	if newRoom.PrimaryPart then
+		newRoom:SetPrimaryPartCFrame(CFrame.new(targetWorldPos))
+		print("Positioned room", newRoom.Name, "at", targetWorldPos, "using PrimaryPart")
+	else
+		-- Method 2: Find anchor part and position precisely
+		local anchorPart = self:findAnchorPart(newRoom)
+
+		if anchorPart then
+			-- Calculate the offset needed to move anchor to target position
+			local currentAnchorPos = anchorPart.Position
+			local offset = targetWorldPos - currentAnchorPos
+
+			-- Move all parts by the calculated offset
+			for _, part in pairs(newRoom:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Position = part.Position + offset
+				end
+			end
+
+			print("Positioned room", newRoom.Name, "at", targetWorldPos, "using anchor:", anchorPart.Name)
+		else
+			print("Warning: Could not find anchor part for room positioning!")
+		end
+	end
+
+	-- Create room data
+	local roomData = {
+		gridX = gridX,
+		gridY = gridY,
+		roomType = roomType,
+		model = newRoom,
+		connections = {},
+		isVisited = false,
+		worldPosition = targetWorldPos
+	}
+
+	-- Store in grid and rooms array
+	self.grid[gridX][gridY] = roomData
+	table.insert(self.rooms, roomData)
+
+	-- AUTO-CREATE CAMERA TRIGGER AND FOCUS
+	self:createCameraTrigger(roomData)
+	self:createCameraFocus(roomData)
+
+	-- 🔧 FIXED: Item spawning - no longer done here, moved to after all rooms are created
+
+	print("Created", roomType, "room at grid:", gridX, gridY, "world:", targetWorldPos)
+	return roomData
+end
+
+-- Find the best anchor part for positioning
+function DungeonGenerator:findAnchorPart(roomModel)
+	-- Priority 1: Look for parts named "Floor", "Base", or "Ground"
+	local priorityNames = {"Floor", "Base", "Ground", "Foundation"}
+
+	for _, name in pairs(priorityNames) do
+		for _, part in pairs(roomModel:GetDescendants()) do
+			if part:IsA("BasePart") and part.Name == name then
+				return part
+			end
+		end
+	end
+
+	-- Priority 2: Look for the largest part (likely the floor)
+	local largestPart = nil
+	local largestVolume = 0
+
+	for _, part in pairs(roomModel:GetDescendants()) do
+		if part:IsA("BasePart") then
+			local volume = part.Size.X * part.Size.Y * part.Size.Z
+			if volume > largestVolume then
+				largestVolume = volume
+				largestPart = part
+			end
+		end
+	end
+
+	return largestPart
+end
+
+-- 🔧 FIXED: Spawn items in treasure rooms (corrected function)
+function DungeonGenerator:spawnItemsInTreasureRooms()
+	print("🔍 Looking for existing treasure rooms to add items...")
+
+	for _, roomData in pairs(self.rooms) do
+		if roomData.roomType == RoomTypes.TREASURE then
+			print("📦 Adding items to existing treasure room:", roomData.model.Name)
+
+			-- 🔧 FIXED: Use ItemSpawner instead of ItemPickup, and use roomData.model
+			if _G.ItemSpawner then
+				_G.ItemSpawner:onTreasureRoomCreated(roomData.model)
+			else
+				warn("⚠️ ItemSpawner system not found - make sure ItemSpawner script is loaded")
+			end
+		end
+	end
+end
+
+-- Check if boss room can be placed at minimum distance from spawn
+function DungeonGenerator:canPlaceBossRoom(gridX, gridY, spawnX, spawnY)
+	-- Calculate Manhattan distance (Isaac-style distance)
+	local distance = math.abs(gridX - spawnX) + math.abs(gridY - spawnY)
+
+	-- Boss room must be at least 2 rooms away from spawn
+	return distance >= 2
+end
+
+-- Load room templates with auto PrimaryPart setting
+function DungeonGenerator:loadRoomTemplates()
+	print("Loading room templates...")
+
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and string.find(obj.Name, "RoomTemplate_") then
+			local roomType = obj.Name:gsub("RoomTemplate_", "")
+
+			-- Auto-set PrimaryPart for perfect positioning
+			if not obj.PrimaryPart then
+				local anchorPart = self:findAnchorPart(obj)
+				if anchorPart then
+					obj.PrimaryPart = anchorPart
+					print("Set PrimaryPart for", obj.Name, "to", anchorPart.Name)
+				end
+			end
+
+			if not self.roomTemplates[roomType] then
+				self.roomTemplates[roomType] = {}
+			end
+
+			table.insert(self.roomTemplates[roomType], obj)
+			obj.Parent = ReplicatedStorage
+			print("Loaded template:", obj.Name)
+		end
+	end
+
+	if not self.roomTemplates["Normal"] then
+		print("Warning: No Normal room templates found!")
+		print("Create a model named 'RoomTemplate_Normal' to get started.")
+	end
+end
+
+-- Get room template
+function DungeonGenerator:getRoomTemplate(roomType)
+	local templates = self.roomTemplates[roomType]
+	if templates and #templates > 0 then
+		return templates[math.random(1, #templates)]
+	end
+
+	if roomType ~= "Normal" and self.roomTemplates["Normal"] then
+		return self.roomTemplates["Normal"][1]
+	end
+
+	return nil
+end
+
+-- Generate dungeon with perfect grid alignment and auto cameras
+function DungeonGenerator:generateDungeon()
+	print("=== Generating Perfect Grid Dungeon with Auto Cameras ===")
+	print("Room dimensions:", ROOM_WIDTH, "x", ROOM_HEIGHT, "Grid size:", GRID_SIZE, "Spacing:", ROOM_SPACING)
+
+	-- Create spawn room at center
+	local centerX, centerY = math.ceil(GRID_SIZE/2), math.ceil(GRID_SIZE/2)
+	local spawnRoom = self:createRoom(centerX, centerY, RoomTypes.SPAWN)
+
+	if not spawnRoom then
+		print("Failed to create spawn room!")
+		return
+	end
+
+	-- Generate Isaac-style dungeon
+	self:generateMainPath(spawnRoom)
+	self:addSpecialRooms()
+	self:connectRooms()
+
+	-- APPLY GRID OVERLAYS AFTER ALL ROOMS ARE CREATED
+	self:applyGridOverlaysToAllRooms()
+
+	print("=== Generation Complete ===")
+	print("Total rooms:", #self.rooms)
+	print("Each room has automatic camera triggers and focus points!")
+
+	-- 🔧 FIXED: Spawn items in treasure rooms AFTER everything is set up
+	print("🎮 SPAWNING ITEMS IN TREASURE ROOMS...")
+	task.spawn(function()
+		task.wait(3) -- Wait for all rooms and overlays to be complete
+		self:spawnItemsInTreasureRooms()
+	end)
+
+	-- Remove grid guides after a delay
+	if SHOW_GRID_GUIDES then
+		task.spawn(function()
+			task.wait(10)
+			local gridGuides = workspace:FindFirstChild("GridGuides")
+			if gridGuides then
+				gridGuides:Destroy()
+				print("Grid guides removed")
+			end
+		end)
+	end
+end
+
+-- NEW: Apply grid overlays to all rooms after everything is created
+function DungeonGenerator:applyGridOverlaysToAllRooms()
+	print("🎨 APPLYING GRID OVERLAYS TO ALL ROOMS...")
+
+	-- Wait for Grid Overlay Generator to be available
+	local attempts = 0
+	while not _G.GridOverlayGenerator and attempts < 50 do
+		print("Waiting for Grid Overlay Generator to load... Attempt", attempts + 1)
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if not _G.GridOverlayGenerator then
+		warn("❌ Grid Overlay Generator not found! Make sure Grid Overlay Asset script is running.")
+		return
+	end
+
+	-- Create overlay generator once
+	if not self.overlayGenerator then
+		self.overlayGenerator = _G.GridOverlayGenerator.new()
+		print("✅ Grid Overlay Generator loaded successfully!")
+	end
+
+	-- Apply overlay to each room with the complete grid data
+	for _, roomData in pairs(self.rooms) do
+		print("🎨 Applying overlay to", roomData.roomType, "room at grid", roomData.gridX, roomData.gridY)
+		self.overlayGenerator:applyToRoom(
+			roomData.model, 
+			roomData.roomType, 
+			roomData.connections, 
+			self.grid, 
+			roomData.gridX, 
+			roomData.gridY
+		)
+		print("✅ Applied grid overlay to", roomData.roomType, "room")
+	end
+
+	print("🎨 ALL GRID OVERLAYS APPLIED SUCCESSFULLY!")
+
+	-- Initialize door system
+	if _G.SharedDoorManager then
+		_G.SharedDoorManager:checkForNewDoorOpenings()
+		print("🚪 DOOR SYSTEM TRIGGERED!")
+	else
+		print("⚠️ SharedDoorManager not found")
+	end
+
+	print("🔒 INITIALIZING LOCKED DOOR SYSTEM...")
+	print("🔒 Door locking handled automatically by SharedDoorManager")
+end
+
+-- Generate main path from spawn to boss (Isaac style with distance rule)
+function DungeonGenerator:generateMainPath(spawnRoom)
+	local currentRoom = spawnRoom
+	local pathLength = math.random(6, 8)  -- Isaac typical path length
+	local spawnX, spawnY = spawnRoom.gridX, spawnRoom.gridY
+
+	print("Generating main path with", pathLength, "rooms")
+	print("Spawn room at:", spawnX, spawnY)
+
+	for i = 1, pathLength do
+		-- Get possible directions (up, down, left, right)
+		local directions = {
+			{0, -1}, -- Up
+			{0, 1},  -- Down  
+			{-1, 0}, -- Left
+			{1, 0}   -- Right
+		}
+
+		-- Shuffle directions for randomness
+		for j = #directions, 2, -1 do
+			local k = math.random(j)
+			directions[j], directions[k] = directions[k], directions[j]
+		end
+
+		-- Try each direction until we find a valid spot
+		local nextRoom = nil
+		for _, dir in pairs(directions) do
+			local newX = currentRoom.gridX + dir[1]
+			local newY = currentRoom.gridY + dir[2]
+
+			-- Check if position is valid and empty
+			if newX >= 1 and newX <= GRID_SIZE and newY >= 1 and newY <= GRID_SIZE then
+				if not self.grid[newX][newY] then
+					-- Determine room type
+					local roomType = RoomTypes.NORMAL
+
+					-- For the final room (boss room), check distance rule
+					if i == pathLength then
+						if self:canPlaceBossRoom(newX, newY, spawnX, spawnY) then
+							roomType = RoomTypes.BOSS
+							print("✅ Boss room placement valid at", newX, newY, "- distance from spawn:", math.abs(newX - spawnX) + math.abs(newY - spawnY))
+						else
+							print("❌ Boss room too close to spawn at", newX, newY, "- distance:", math.abs(newX - spawnX) + math.abs(newY - spawnY))
+							-- Don't place boss here, continue path
+							roomType = RoomTypes.NORMAL
+						end
+					end
+
+					nextRoom = self:createRoom(newX, newY, roomType)
+
+					-- If we placed a boss room, we're done
+					if roomType == RoomTypes.BOSS then
+						print("🏰 Boss room successfully placed at safe distance!")
+						return
+					end
+
+					break
+				end
+			end
+		end
+
+		if nextRoom then
+			currentRoom = nextRoom
+		else
+			print("Could not extend path further, stopping at", i-1, "rooms")
+			break
+		end
+	end
+
+	-- If we reach here without placing a boss, try to place one at a valid distance
+	print("⚠️ Main path complete but no boss room placed. Attempting to place boss at valid distance...")
+	self:placeBossAtValidDistance(spawnX, spawnY)
+end
+
+-- Ensure boss room is placed at valid distance from spawn
+function DungeonGenerator:placeBossAtValidDistance(spawnX, spawnY)
+	local attempts = 0
+	local maxAttempts = 100
+
+	while attempts < maxAttempts do
+		-- Try to place boss room adjacent to any existing room
+		local existingRoom = self.rooms[math.random(1, #self.rooms)]
+
+		-- Try adjacent positions
+		local directions = {{0,-1}, {0,1}, {-1,0}, {1,0}}
+		local dir = directions[math.random(1, #directions)]
+
+		local newX = existingRoom.gridX + dir[1]
+		local newY = existingRoom.gridY + dir[2]
+
+		-- Check if valid, empty, and at proper distance from spawn
+		if newX >= 1 and newX <= GRID_SIZE and newY >= 1 and newY <= GRID_SIZE then
+			if not self.grid[newX][newY] and self:canPlaceBossRoom(newX, newY, spawnX, spawnY) then
+				self:createRoom(newX, newY, RoomTypes.BOSS)
+				print("🏰 Boss room placed at", newX, newY, "- distance from spawn:", math.abs(newX - spawnX) + math.abs(newY - spawnY))
+				return
+			end
+		end
+
+		attempts = attempts + 1
+	end
+
+	print("❌ Could not place boss room at valid distance after", maxAttempts, "attempts")
+	print("❌ This shouldn't happen - consider increasing pathLength or grid size")
+end
+
+-- Add special rooms (treasure, shop)
+function DungeonGenerator:addSpecialRooms()
+	-- Add 1-2 treasure rooms
+	for i = 1, math.random(1, 2) do
+		self:addSpecialRoomNearPath(RoomTypes.TREASURE)
+	end
+
+	-- Add shop room
+	self:addSpecialRoomNearPath(RoomTypes.SHOP)
+end
+
+-- Add special room adjacent to existing rooms
+function DungeonGenerator:addSpecialRoomNearPath(roomType)
+	local attempts = 0
+	local maxAttempts = 50
+
+	while attempts < maxAttempts do
+		-- Pick a random existing room
+		local existingRoom = self.rooms[math.random(1, #self.rooms)]
+
+		-- Try adjacent positions
+		local directions = {{0,-1}, {0,1}, {-1,0}, {1,0}}
+		local dir = directions[math.random(1, #directions)]
+
+		local newX = existingRoom.gridX + dir[1]
+		local newY = existingRoom.gridY + dir[2]
+
+		-- Check if valid and empty
+		if newX >= 1 and newX <= GRID_SIZE and newY >= 1 and newY <= GRID_SIZE then
+			if not self.grid[newX][newY] then
+				self:createRoom(newX, newY, roomType)
+				print("Added", roomType, "room at", newX, newY)
+				return
+			end
+		end
+
+		attempts = attempts + 1
+	end
+
+	print("Could not place", roomType, "room after", maxAttempts, "attempts")
+end
+
+-- Connect adjacent rooms with doors
+function DungeonGenerator:connectRooms()
+	print("Connecting rooms...")
+
+	for _, room in pairs(self.rooms) do
+		local x, y = room.gridX, room.gridY
+
+		-- Check each direction for adjacent rooms
+		local directions = {
+			{0, -1, "North"},
+			{0, 1, "South"}, 
+			{-1, 0, "West"},
+			{1, 0, "East"}
+		}
+
+		for _, dir in pairs(directions) do
+			local adjX, adjY = x + dir[1], y + dir[2]
+			local direction = dir[3]
+
+			-- If there's a room adjacent, connect them
+			if self.grid[adjX] and self.grid[adjX][adjY] then
+				room.connections[direction] = true
+				print("Connected", room.roomType, "room to", direction)
+			end
+		end
+	end
+end
+
+-- Create and start generation
+local generator = DungeonGenerator.new()
+
+-- Start generation after a short delay
+task.wait(1)
+generator:generateDungeon()
+
+_G.DungeonGenerator = generator
+
+print("Complete Dungeon Generator with Auto Camera System loaded!")
