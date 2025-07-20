@@ -1,11 +1,15 @@
 -- ========================================================================
--- ENHANCED BOSS MANAGER - Preserves Your Advanced Item/Rarity System
+-- FIXED ENHANCED BOSS MANAGER - Properly Loads ItemDatabase
 -- ModuleScript in ReplicatedStorage/Modules/EnhancedBossManager
 -- ========================================================================
 
 local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local EnhancedBossManager = {}
+
+-- Load ItemDatabase directly (don't wait for global)
+local ItemDatabase = require(ReplicatedStorage.Modules.ItemDatabase)
 
 -- Boss configuration using YOUR item system
 local BOSS_CONFIG = {
@@ -83,7 +87,10 @@ function EnhancedBossManager.new()
 
 	function self:spawnAdvancedPedestal(bossModel, roomModel, bossType)
 		local bossPos = self:getBossPosition(bossModel)
-		if not bossPos then return end
+		if not bossPos then 
+			warn("❌ Could not get boss position")
+			return 
+		end
 
 		local pedestalPos = bossPos + Vector3.new(0, BOSS_CONFIG.PEDESTAL_HEIGHT, 0)
 
@@ -109,6 +116,8 @@ function EnhancedBossManager.new()
 					self:addBossItemEffects(spawnedItem)
 					print("✨ Boss item spawned:", selectedItem)
 				end
+			else
+				warn("❌ ItemSpawner not found!")
 			end
 		end)
 	end
@@ -121,38 +130,52 @@ function EnhancedBossManager.new()
 			config = BOSS_CONFIG.BOSS_TYPES.NORMAL_BOSS
 		end
 
-		-- Use YOUR ItemDatabase system
-		if not _G.ItemDatabase then
-			warn("❌ ItemDatabase not found!")
-			return nil
-		end
+		-- Use ItemDatabase directly (no need to check global)
+		print("🔍 Using ItemDatabase to select boss item...")
 
-		-- Get items from specified pools (YOUR system)
+		-- Get items from specified pools
 		local availableItems = {}
 
 		for _, poolName in pairs(config.pools) do
-			local pool = _G.ItemDatabase.ItemPools[poolName] or {}
+			local pool = ItemDatabase.ItemPools[poolName] or {}
+			print("📋 Checking pool:", poolName, "- items:", #pool)
+
 			for _, itemId in pairs(pool) do
-				local item = _G.ItemDatabase:GetItem(itemId)
+				local item = ItemDatabase:GetItem(itemId)
 				if item and item.unlocked then
 					table.insert(availableItems, {id = itemId, item = item})
+					print("  ✅ Available:", item.name, "(" .. item.rarity .. ")")
+				else
+					print("  ❌ Unavailable:", itemId, item and ("- locked") or ("- not found"))
 				end
 			end
 		end
 
 		if #availableItems == 0 then
 			warn("❌ No available items in pools:", table.concat(config.pools, ", "))
+			print("🔄 Falling back to all items...")
+
+			-- Fallback: use any unlocked item
+			for itemId, item in pairs(ItemDatabase.Items) do
+				if item.unlocked then
+					table.insert(availableItems, {id = itemId, item = item})
+				end
+			end
+		end
+
+		if #availableItems == 0 then
+			warn("❌ No items available at all!")
 			return nil
 		end
 
-		-- Filter by guaranteed rarity (YOUR system)
+		-- Filter by guaranteed rarity
 		local guaranteedRarity = config.guaranteedRarity
 		local filteredItems = {}
 
 		for _, itemData in pairs(availableItems) do
 			local item = itemData.item
-			local itemRarityWeight = _G.ItemDatabase.Rarities[item.rarity].weight or 1
-			local minRarityWeight = _G.ItemDatabase.Rarities[guaranteedRarity].weight or 1
+			local itemRarityWeight = ItemDatabase.Rarities[item.rarity].weight or 1
+			local minRarityWeight = ItemDatabase.Rarities[guaranteedRarity].weight or 1
 
 			-- Include if rarity meets minimum (lower weight = higher rarity)
 			if itemRarityWeight <= minRarityWeight then
@@ -165,7 +188,9 @@ function EnhancedBossManager.new()
 			filteredItems = availableItems
 		end
 
-		-- Apply weighted selection (YOUR system)
+		print("🎯 Filtered to", #filteredItems, "items meeting rarity requirement")
+
+		-- Apply weighted selection
 		local weightedItems = {}
 		for _, itemData in pairs(filteredItems) do
 			local item = itemData.item
@@ -180,11 +205,12 @@ function EnhancedBossManager.new()
 		-- Select random weighted item
 		if #weightedItems > 0 then
 			local selectedId = weightedItems[math.random(1, #weightedItems)]
-			local selectedItem = _G.ItemDatabase:GetItem(selectedId)
+			local selectedItem = ItemDatabase:GetItem(selectedId)
 			print("👑 Selected", selectedItem.rarity, "boss item:", selectedItem.name)
 			return selectedId
 		end
 
+		warn("❌ Failed to select any item!")
 		return nil
 	end
 
