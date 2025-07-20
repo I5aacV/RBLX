@@ -1,0 +1,448 @@
+-- ======================================================================== 
+-- BOSS REWARD SYSTEM - Create as new script in ServerScriptService
+-- ======================================================================== 
+
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Boss Reward Configuration
+local BOSS_REWARDS = {
+	-- Guaranteed rewards for boss kills
+	GUARANTEED_ITEMS = 1, -- Always spawn this many items
+	BONUS_ITEM_CHANCE = 0.3, -- 30% chance for extra item
+
+	-- Special boss-specific rewards
+	BOSS_SPECIFIC = {
+		["Boss_Monstro"] = {
+			guaranteedItems = 1,
+			bonusChance = 0.4,
+			specialPool = {"mom_knife", "brimstone", "sacred_heart"}
+		},
+		["Boss_Larry"] = {
+			guaranteedItems = 1,
+			bonusChance = 0.2,
+			specialPool = {"technology", "inner_eye"}
+		}
+		-- Add more bosses as needed
+	},
+
+	-- Spawn positioning
+	ITEM_SPREAD_RADIUS = 8, -- How far apart to spawn multiple items
+	SPAWN_HEIGHT_OFFSET = 2, -- Height above floor
+
+	-- Visual effects
+	VICTORY_EFFECT_DURATION = 2.0,
+	ITEM_SPAWN_DELAY = 1.0 -- Delay before items appear
+}
+
+-- ======================================================================== 
+-- BOSS REWARD MANAGER CLASS
+-- ======================================================================== 
+
+local BossRewardManager = {}
+BossRewardManager.__index = BossRewardManager
+
+function BossRewardManager.new()
+	local self = setmetatable({}, BossRewardManager)
+	self.bossesDefeated = {} -- Track defeated bosses
+	self.rewardsSpawned = {} -- Prevent duplicate rewards
+
+	self:initialize()
+	return self
+end
+
+function BossRewardManager:initialize()
+	print("👑 Boss Reward System initializing...")
+
+	-- Wait for required systems
+	self:waitForSystems()
+
+	-- Hook into enemy spawner
+	self:hookIntoEnemySpawner()
+
+	print("✅ Boss Reward System ready!")
+end
+
+function BossRewardManager:waitForSystems()
+	local attempts = 0
+	while (not _G.EnemySpawner or not _G.ItemSpawner) and attempts < 100 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if not _G.EnemySpawner then
+		warn("❌ EnemySpawner not found! Boss rewards may not work.")
+	end
+
+	if not _G.ItemSpawner then
+		warn("❌ ItemSpawner not found! Boss rewards may not work.")
+	end
+
+	print("🔗 Connected to enemy and item systems")
+end
+
+function BossRewardManager:hookIntoEnemySpawner()
+	if not _G.EnemySpawner then return end
+
+	-- Store original room cleared function
+	local originalOnRoomCleared = _G.EnemySpawner.onRoomCleared
+
+	-- Override with boss detection
+	_G.EnemySpawner.onRoomCleared = function(enemySpawner, roomData)
+		print("🏠 Room cleared:", roomData.roomType)
+
+		-- Check if this was a boss room
+		if self:isBossRoom(roomData) then
+			print("👑 BOSS ROOM CLEARED! Processing rewards...")
+			self:onBossDefeated(roomData)
+		end
+
+		-- Call original function
+		originalOnRoomCleared(enemySpawner, roomData)
+	end
+
+	print("🎣 Hooked into enemy spawner for boss detection")
+end
+
+-- ======================================================================== 
+-- BOSS DETECTION
+-- ======================================================================== 
+
+function BossRewardManager:isBossRoom(roomData)
+	-- Check room type
+	if roomData.roomType == "Boss" then
+		return true
+	end
+
+	-- Check room name patterns
+	if roomData.model and roomData.model.Name then
+		local roomName = string.lower(roomData.model.Name)
+		if string.find(roomName, "boss") then
+			return true
+		end
+	end
+
+	return false
+end
+
+function BossRewardManager:getBossType(roomData)
+	if not roomData.model then return "Generic_Boss" end
+
+	local roomName = roomData.model.Name
+
+	-- Extract boss type from room name
+	if string.find(roomName, "Monstro") then
+		return "Boss_Monstro"
+	elseif string.find(roomName, "Larry") then
+		return "Boss_Larry"
+	else
+		return "Generic_Boss"
+	end
+end
+
+-- ======================================================================== 
+-- BOSS DEFEAT HANDLING
+-- ======================================================================== 
+
+function BossRewardManager:onBossDefeated(roomData)
+	local bossType = self:getBossType(roomData)
+	local roomId = self:getRoomId(roomData)
+
+	-- Prevent duplicate rewards
+	if self.rewardsSpawned[roomId] then
+		print("⚠️ Rewards already spawned for this boss room")
+		return
+	end
+	self.rewardsSpawned[roomId] = true
+
+	print("👑 BOSS DEFEATED:", bossType)
+
+	-- Add to defeated list
+	table.insert(self.bossesDefeated, {
+		bossType = bossType,
+		roomData = roomData,
+		timestamp = tick()
+	})
+
+	-- Create victory effects
+	self:createVictoryEffects(roomData)
+
+	-- Spawn rewards after delay
+	task.spawn(function()
+		task.wait(BOSS_REWARDS.ITEM_SPAWN_DELAY)
+		self:spawnBossRewards(roomData, bossType)
+	end)
+end
+
+function BossRewardManager:getRoomId(roomData)
+	if roomData.model then
+		return roomData.model.Name
+	else
+		return roomData.roomType .. "_" .. (roomData.gridX or 0) .. "_" .. (roomData.gridY or 0)
+	end
+end
+
+-- ======================================================================== 
+-- REWARD SPAWNING
+-- ======================================================================== 
+
+function BossRewardManager:spawnBossRewards(roomData, bossType)
+	print("🎁 Spawning boss rewards for:", bossType)
+
+	if not _G.ItemSpawner then
+		warn("❌ ItemSpawner not available for boss rewards!")
+		return
+	end
+
+	-- Get boss-specific config
+	local bossConfig = BOSS_REWARDS.BOSS_SPECIFIC[bossType] or {}
+	local guaranteedItems = bossConfig.guaranteedItems or BOSS_REWARDS.GUARANTEED_ITEMS
+	local bonusChance = bossConfig.bonusChance or BOSS_REWARDS.BONUS_ITEM_CHANCE
+
+	-- Calculate total items to spawn
+	local totalItems = guaranteedItems
+	if math.random() < bonusChance then
+		totalItems = totalItems + 1
+		print("🍀 Bonus item granted!")
+	end
+
+	print("🎁 Spawning", totalItems, "boss reward items")
+
+	-- Find room floor
+	local floor = self:findRoomFloor(roomData.model)
+	if not floor then
+		warn("❌ No floor found in boss room for item spawning!")
+		return
+	end
+
+	-- Spawn each item
+	for i = 1, totalItems do
+		local itemId = self:selectBossRewardItem(bossType, bossConfig)
+		if itemId then
+			local spawnPosition = self:calculateItemSpawnPosition(floor, i, totalItems)
+			local item = _G.ItemSpawner:spawnItemInRoom(roomData.model, itemId, spawnPosition)
+
+			if item then
+				-- Add special boss reward effects
+				self:addBossRewardEffects(item, i)
+				print("✨ Spawned boss reward:", itemId, "at position", i)
+			else
+				warn("❌ Failed to spawn boss reward item:", itemId)
+			end
+		else
+			warn("❌ No valid boss reward item selected!")
+		end
+	end
+
+	print("🎉 Boss reward spawning complete!")
+end
+
+function BossRewardManager:selectBossRewardItem(bossType, bossConfig)
+	-- Try boss-specific pool first
+	if bossConfig.specialPool and #bossConfig.specialPool > 0 then
+		local specialItem = bossConfig.specialPool[math.random(1, #bossConfig.specialPool)]
+		print("👑 Selected special boss item:", specialItem)
+		return specialItem
+	end
+
+	-- Fall back to boss room pool
+	local ItemDatabase = require(ReplicatedStorage.ItemDatabase)
+	local itemId = ItemDatabase:GetRandomItemFromPool("BOSS_ROOM")
+
+	if itemId then
+		print("🎁 Selected boss room item:", itemId)
+		return itemId
+	else
+		warn("❌ No boss room items available!")
+		return nil
+	end
+end
+
+function BossRewardManager:calculateItemSpawnPosition(floor, itemIndex, totalItems)
+	local floorPosition = floor.Position
+	local floorY = floorPosition.Y + floor.Size.Y/2 + BOSS_REWARDS.SPAWN_HEIGHT_OFFSET
+
+	if totalItems == 1 then
+		-- Single item in center
+		return Vector3.new(floorPosition.X, floorY, floorPosition.Z)
+	else
+		-- Multiple items in circle/line
+		local angle = (itemIndex - 1) * (math.pi * 2 / totalItems)
+		local radius = BOSS_REWARDS.ITEM_SPREAD_RADIUS
+		local x = floorPosition.X + math.cos(angle) * radius
+		local z = floorPosition.Z + math.sin(angle) * radius
+
+		return Vector3.new(x, floorY, z)
+	end
+end
+
+function BossRewardManager:addBossRewardEffects(item, itemIndex)
+	-- Add golden glow to boss rewards
+	local visual = item:FindFirstChild("ItemVisual")
+	if visual then
+		-- Enhanced glow for boss items
+		local light = visual:FindFirstChild("PointLight")
+		if light then
+			light.Color = Color3.fromRGB(255, 215, 0) -- Gold
+			light.Brightness = 3
+			light.Range = 15
+		end
+
+		-- Add victory particle effect
+		self:createItemVictoryEffect(visual, itemIndex)
+	end
+end
+
+-- ======================================================================== 
+-- VISUAL EFFECTS
+-- ======================================================================== 
+
+function BossRewardManager:createVictoryEffects(roomData)
+	local floor = self:findRoomFloor(roomData.model)
+	if not floor then return end
+
+	print("🎆 Creating boss victory effects...")
+
+	-- Create victory light burst
+	local victoryLight = Instance.new("Part")
+	victoryLight.Name = "VictoryEffect"
+	victoryLight.Size = Vector3.new(1, 1, 1)
+	victoryLight.Position = floor.Position + Vector3.new(0, 10, 0)
+	victoryLight.Anchored = true
+	victoryLight.CanCollide = false
+	victoryLight.Transparency = 1
+	victoryLight.Parent = roomData.model
+
+	-- Add point light
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 215, 0) -- Gold
+	light.Brightness = 0
+	light.Range = 50
+	light.Parent = victoryLight
+
+	-- Animate victory effect
+	local lightTween = TweenService:Create(light,
+		TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{Brightness = 10}
+	)
+
+	local fadeTween = TweenService:Create(light,
+		TweenInfo.new(1.5, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+		{Brightness = 0, Range = 5}
+	)
+
+	lightTween:Play()
+	lightTween.Completed:Connect(function()
+		task.wait(0.5)
+		fadeTween:Play()
+	end)
+
+	fadeTween.Completed:Connect(function()
+		victoryLight:Destroy()
+	end)
+end
+
+function BossRewardManager:createItemVictoryEffect(itemVisual, itemIndex)
+	-- Staggered item appearance
+	local delay = (itemIndex - 1) * 0.3
+
+	task.spawn(function()
+		task.wait(delay)
+
+		-- Flash effect when item appears
+		local originalColor = itemVisual.Color
+		itemVisual.Color = Color3.fromRGB(255, 255, 255) -- White flash
+
+		local colorTween = TweenService:Create(itemVisual,
+			TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{Color = originalColor}
+		)
+		colorTween:Play()
+	end)
+end
+
+-- ======================================================================== 
+-- UTILITY FUNCTIONS
+-- ======================================================================== 
+
+function BossRewardManager:findRoomFloor(roomModel)
+	if not roomModel then return nil end
+
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (
+			string.lower(child.Name):find("floor") or
+				(child.Size.X >= 100 and child.Size.Z >= 70)
+			) then
+			return child
+		end
+	end
+	return nil
+end
+
+-- ======================================================================== 
+-- PUBLIC API
+-- ======================================================================== 
+
+function BossRewardManager:getBossesDefeated()
+	return #self.bossesDefeated
+end
+
+function BossRewardManager:getLastBossDefeated()
+	if #self.bossesDefeated > 0 then
+		return self.bossesDefeated[#self.bossesDefeated]
+	end
+	return nil
+end
+
+function BossRewardManager:forceBossReward(roomModel)
+	local roomData = {
+		model = roomModel,
+		roomType = "Boss"
+	}
+
+	print("🔧 Force spawning boss reward for:", roomModel.Name)
+	self:onBossDefeated(roomData)
+end
+
+-- ======================================================================== 
+-- INITIALIZATION
+-- ======================================================================== 
+
+-- Create global instance
+local bossRewardManager = BossRewardManager.new()
+_G.BossRewardManager = bossRewardManager
+
+-- Export debug functions
+_G.ForceBossReward = function(roomName)
+	local room = workspace:FindFirstChild(roomName)
+	if room then
+		bossRewardManager:forceBossReward(room)
+		print("✅ Forced boss reward for:", roomName)
+	else
+		print("❌ Room not found:", roomName)
+	end
+end
+
+_G.ListBossesDefeated = function()
+	local count = bossRewardManager:getBossesDefeated()
+	print("👑 Bosses defeated:", count)
+
+	for i, boss in ipairs(bossRewardManager.bossesDefeated) do
+		print("  ", i, boss.bossType, "defeated at", boss.timestamp)
+	end
+end
+
+print("👑 Boss Reward System loaded!")
+print("🎁 Features:")
+print("  ✅ Automatic boss detection")
+print("  ✅ Boss-specific item pools") 
+print("  ✅ Victory effects")
+print("  ✅ Multiple item spawning")
+print("  ✅ Bonus item chances")
+print("")
+print("🔧 Debug commands:")
+print("  _G.ForceBossReward('BossRoomName')")
+print("  _G.ListBossesDefeated()")
+
+return bossRewardManager
