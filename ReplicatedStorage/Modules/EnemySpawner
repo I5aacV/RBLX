@@ -50,7 +50,7 @@ local CONFIG = {
 	-- Room type configurations
 	ROOM_CONFIGS = {
 		Normal = {usePatterns = true, spawnDelay = 0.2},
-		Boss = {usePatterns = false, enemies = {"Boss_Monstro"}, minCount = 1, maxCount = 1},
+		Boss = {usePatterns = false, minCount = 0, maxCount = 0}, -- No enemies - let BossIntegration handle bosses
 		Treasure = {usePatterns = false, minCount = 0, maxCount = 0}, -- No enemies
 		Shop = {usePatterns = false, minCount = 0, maxCount = 0}, -- No enemies  
 		Spawn = {usePatterns = false, minCount = 0, maxCount = 0} -- No enemies
