@@ -1,0 +1,292 @@
+-- ========================================================================
+-- ENHANCED BOSS MANAGER - Preserves Your Advanced Item/Rarity System
+-- ModuleScript in ReplicatedStorage/Modules/EnhancedBossManager
+-- ========================================================================
+
+local TweenService = game:GetService("TweenService")
+
+local EnhancedBossManager = {}
+
+-- Boss configuration using YOUR item system
+local BOSS_CONFIG = {
+	PEDESTAL_SPAWN_DELAY = 2.0,
+	PEDESTAL_HEIGHT = 2,
+	VICTORY_TEXT_DURATION = 3.0,
+
+	-- Boss-specific configurations (matches your ItemDatabase system)
+	BOSS_TYPES = {
+		MONSTRO = {
+			pools = {"BOSS_ROOM", "MONSTRO_POOL"}, -- Uses YOUR ItemDatabase pools
+			guaranteedRarity = "LEGENDARY",
+			rarityWeights = {
+				RARE = 20,
+				LEGENDARY = 60,
+				BLESSED = 15,
+				CURSED = 5
+			}
+		},
+		LARRY = {
+			pools = {"BOSS_ROOM", "LARRY_POOL"},
+			guaranteedRarity = "RARE", 
+			rarityWeights = {
+				UNCOMMON = 30,
+				RARE = 50,
+				LEGENDARY = 20
+			}
+		},
+		NORMAL_BOSS = {
+			pools = {"BOSS_ROOM"},
+			guaranteedRarity = "RARE",
+			rarityWeights = {
+				RARE = 60,
+				LEGENDARY = 30,
+				BLESSED = 5,
+				CURSED = 5
+			}
+		}
+	}
+}
+
+function EnhancedBossManager.new()
+	local self = {}
+	self.defeatedBosses = {}
+
+	function self:onBossDefeated(bossModel, roomModel)
+		print("👑 Boss defeated:", bossModel.Name)
+
+		-- Record defeat
+		local bossType = self:getBossType(bossModel)
+		table.insert(self.defeatedBosses, {
+			name = bossModel.Name,
+			type = bossType,
+			timestamp = tick()
+		})
+
+		task.spawn(function()
+			task.wait(BOSS_CONFIG.PEDESTAL_SPAWN_DELAY)
+			self:spawnAdvancedPedestal(bossModel, roomModel, bossType)
+		end)
+	end
+
+	function self:getBossType(bossModel)
+		local name = string.lower(bossModel.Name)
+
+		-- Specific boss detection
+		if string.find(name, "monstro") then
+			return "MONSTRO"
+		elseif string.find(name, "larry") then 
+			return "LARRY"
+		else
+			return "NORMAL_BOSS"
+		end
+	end
+
+	function self:spawnAdvancedPedestal(bossModel, roomModel, bossType)
+		local bossPos = self:getBossPosition(bossModel)
+		if not bossPos then return end
+
+		local pedestalPos = bossPos + Vector3.new(0, BOSS_CONFIG.PEDESTAL_HEIGHT, 0)
+
+		-- Create enhanced pedestal
+		local pedestal = self:createGoldenPedestal(pedestalPos, roomModel)
+
+		-- Select item using YOUR advanced system
+		local selectedItem = self:selectBossItemAdvanced(bossType)
+		if not selectedItem then
+			warn("❌ No boss item selected!")
+			return
+		end
+
+		-- Spawn item with YOUR ItemSpawner
+		task.spawn(function()
+			task.wait(1.0) -- Dramatic pause
+
+			if _G.ItemSpawner then
+				local itemPos = pedestalPos + Vector3.new(0, 1.5, 0)
+				local spawnedItem = _G.ItemSpawner:spawnItemInRoom(roomModel, selectedItem, itemPos)
+
+				if spawnedItem then
+					self:addBossItemEffects(spawnedItem)
+					print("✨ Boss item spawned:", selectedItem)
+				end
+			end
+		end)
+	end
+
+	function self:selectBossItemAdvanced(bossType)
+		-- Get boss configuration
+		local config = BOSS_CONFIG.BOSS_TYPES[bossType]
+		if not config then
+			warn("❌ No config for boss type:", bossType)
+			config = BOSS_CONFIG.BOSS_TYPES.NORMAL_BOSS
+		end
+
+		-- Use YOUR ItemDatabase system
+		if not _G.ItemDatabase then
+			warn("❌ ItemDatabase not found!")
+			return nil
+		end
+
+		-- Get items from specified pools (YOUR system)
+		local availableItems = {}
+
+		for _, poolName in pairs(config.pools) do
+			local pool = _G.ItemDatabase.ItemPools[poolName] or {}
+			for _, itemId in pairs(pool) do
+				local item = _G.ItemDatabase:GetItem(itemId)
+				if item and item.unlocked then
+					table.insert(availableItems, {id = itemId, item = item})
+				end
+			end
+		end
+
+		if #availableItems == 0 then
+			warn("❌ No available items in pools:", table.concat(config.pools, ", "))
+			return nil
+		end
+
+		-- Filter by guaranteed rarity (YOUR system)
+		local guaranteedRarity = config.guaranteedRarity
+		local filteredItems = {}
+
+		for _, itemData in pairs(availableItems) do
+			local item = itemData.item
+			local itemRarityWeight = _G.ItemDatabase.Rarities[item.rarity].weight or 1
+			local minRarityWeight = _G.ItemDatabase.Rarities[guaranteedRarity].weight or 1
+
+			-- Include if rarity meets minimum (lower weight = higher rarity)
+			if itemRarityWeight <= minRarityWeight then
+				table.insert(filteredItems, itemData)
+			end
+		end
+
+		if #filteredItems == 0 then
+			print("⚠️ No items meet rarity requirement, using all available")
+			filteredItems = availableItems
+		end
+
+		-- Apply weighted selection (YOUR system)
+		local weightedItems = {}
+		for _, itemData in pairs(filteredItems) do
+			local item = itemData.item
+			local rarityWeight = config.rarityWeights[item.rarity] or 1
+
+			-- Add item multiple times based on weight
+			for i = 1, rarityWeight do
+				table.insert(weightedItems, itemData.id)
+			end
+		end
+
+		-- Select random weighted item
+		if #weightedItems > 0 then
+			local selectedId = weightedItems[math.random(1, #weightedItems)]
+			local selectedItem = _G.ItemDatabase:GetItem(selectedId)
+			print("👑 Selected", selectedItem.rarity, "boss item:", selectedItem.name)
+			return selectedId
+		end
+
+		return nil
+	end
+
+	function self:createGoldenPedestal(position, roomModel)
+		-- Create pedestal base
+		local pedestal = Instance.new("Part")
+		pedestal.Name = "BossPedestal"
+		pedestal.Size = Vector3.new(3, 1, 3)
+		pedestal.Position = position
+		pedestal.Anchored = true
+		pedestal.Material = Enum.Material.Marble
+		pedestal.BrickColor = BrickColor.new("Gold")
+		pedestal.Parent = roomModel
+
+		-- Enhanced golden glow
+		local light = Instance.new("PointLight")
+		light.Color = Color3.fromRGB(255, 215, 0)
+		light.Brightness = 3
+		light.Range = 15
+		light.Parent = pedestal
+
+		-- Victory text with animation
+		self:createVictoryText(pedestal)
+
+		return pedestal
+	end
+
+	function self:createVictoryText(pedestal)
+		local gui = Instance.new("BillboardGui")
+		gui.Name = "VictoryText"
+		gui.Size = UDim2.new(0, 200, 0, 50)
+		gui.StudsOffset = Vector3.new(0, 2, 0)
+		gui.Parent = pedestal
+
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, 0, 1, 0)
+		label.BackgroundTransparency = 1
+		label.Text = "🏆 VICTORY! 🏆"
+		label.TextColor3 = Color3.fromRGB(255, 215, 0)
+		label.TextScaled = true
+		label.Font = Enum.Font.SourceSansBold
+		label.TextStrokeTransparency = 0
+		label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		label.Parent = gui
+
+		-- Animated glow effect
+		local scaleTween = TweenService:Create(label, 
+			TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{TextTransparency = 0.3}
+		)
+		scaleTween:Play()
+
+		-- Remove after duration
+		game:GetService("Debris"):AddItem(gui, BOSS_CONFIG.VICTORY_TEXT_DURATION)
+	end
+
+	function self:addBossItemEffects(itemModel)
+		local visual = itemModel:FindFirstChild("ItemVisual")
+		if not visual then return end
+
+		-- Enhanced glow for boss items (works with YOUR ItemSpawner)
+		local existingLight = visual:FindFirstChild("PointLight")
+		if existingLight then
+			existingLight.Brightness = 4
+			existingLight.Range = 20
+			-- Keep the rarity color from YOUR system
+		end
+	end
+
+	function self:getBossPosition(bossModel)
+		if bossModel:FindFirstChild("HumanoidRootPart") then
+			return bossModel.HumanoidRootPart.Position
+		elseif bossModel.PrimaryPart then
+			return bossModel.PrimaryPart.Position
+		else
+			for _, child in pairs(bossModel:GetChildren()) do
+				if child:IsA("BasePart") then
+					return child.Position
+				end
+			end
+		end
+		return nil
+	end
+
+	function self:isBoss(enemy)
+		local name = string.lower(enemy.Name)
+		return string.find(name, "boss") or 
+			string.find(name, "monstro") or 
+			string.find(name, "larry") or
+			string.find(name, "duke")
+	end
+
+	-- Debug functions
+	function self:getBossesDefeated()
+		return #self.defeatedBosses
+	end
+
+	function self:getLastBoss()
+		return self.defeatedBosses[#self.defeatedBosses]
+	end
+
+	return self
+end
+
+return EnhancedBossManager
