@@ -20,10 +20,16 @@ _G.RoomManager = roomManagerInstance
 -- Connect to player room entry (existing RemoteEvent)
 local roomEnterEvent = ReplicatedStorage:WaitForChild("PlayerEnteredRoom", 10)
 if roomEnterEvent then
+	-- In your RoomManagerLoader.lua, UPDATE the existing connection:
 	roomEnterEvent.OnServerEvent:Connect(function(player, roomID)
 		local roomData = roomManagerInstance:onPlayerEnteredRoom(roomID)
 		if roomData then
 			print("🎮 Player", player.Name, "entered room:", roomID)
+
+			-- NEW: Trigger door re-evaluation when player enters room
+			if _G.SharedDoorManager then
+				_G.SharedDoorManager:onPlayerEnteredRoom(roomData.model)
+			end
 		end
 	end)
 	print("🔗 Connected to PlayerEnteredRoom event")
