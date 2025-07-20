@@ -1,0 +1,107 @@
+-- ISAAC SHOOTING SERVER HANDLER
+-- Place this in ServerScriptService
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- Create RemoteEvent
+local shootRemote = ReplicatedStorage:FindFirstChild("IsaacShootRemote")
+if not shootRemote then
+	shootRemote = Instance.new("RemoteEvent")
+	shootRemote.Name = "IsaacShootRemote"
+	shootRemote.Parent = ReplicatedStorage
+end
+
+-- Handle shoot requests from clients
+shootRemote.OnServerEvent:Connect(function(player, targetHumanoid, damage, hitPosition)
+	-- Validate the request
+	if not player or not player.Character then
+		return
+	end
+
+	if not targetHumanoid or not targetHumanoid.Parent then
+		return
+	end
+
+	-- Additional validation: make sure it's actually an enemy
+	local enemy = targetHumanoid.Parent
+	local isValidEnemy = false
+
+	-- Check various ways to identify enemies
+	if game:GetService("CollectionService"):HasTag(enemy, "RoomEnemy") then
+		isValidEnemy = true
+	elseif string.find(string.lower(enemy.Name), "enemy") or
+		string.find(string.lower(enemy.Name), "fly") or
+		string.find(string.lower(enemy.Name), "spider") or
+		string.find(string.lower(enemy.Name), "gaper") or
+		string.find(string.lower(enemy.Name), "boss") then
+		isValidEnemy = true
+	end
+
+	if not isValidEnemy then
+		print("⚠️ Invalid target - not an enemy:", enemy.Name)
+		return
+	end
+
+	-- Make sure enemy is still alive
+	if targetHumanoid.Health <= 0 then
+		print("⚠️ Enemy already dead:", enemy.Name)
+		return
+	end
+
+	-- Apply damage
+	local oldHealth = targetHumanoid.Health
+	targetHumanoid.Health = math.max(0, oldHealth - damage)
+
+	print("💥 Player", player.Name, "dealt", damage, "damage to", enemy.Name)
+	print("   Health:", oldHealth, "→", targetHumanoid.Health)
+
+	-- Create damage effect at hit position
+	if hitPosition then
+		local effect = Instance.new("Explosion")
+		effect.Position = hitPosition
+		effect.BlastRadius = 2
+		effect.BlastPressure = 0
+		effect.Visible = true
+		effect.Parent = workspace
+
+		-- Optional: Create floating damage number
+		local damageGui = Instance.new("BillboardGui")
+		damageGui.Size = UDim2.new(0, 100, 0, 50)
+		damageGui.StudsOffset = Vector3.new(0, 2, 0)
+		damageGui.Parent = workspace
+
+		local damageLabel = Instance.new("TextLabel")
+		damageLabel.Size = UDim2.new(1, 0, 1, 0)
+		damageLabel.BackgroundTransparency = 1
+		damageLabel.Text = "-" .. tostring(damage)
+		damageLabel.TextColor3 = Color3.new(1, 1, 1)
+		damageLabel.TextScaled = true
+		damageLabel.TextStrokeTransparency = 0
+		damageLabel.Font = Enum.Font.SourceSansBold
+		damageLabel.Parent = damageGui
+
+		-- Animate damage number
+		game:GetService("TweenService"):Create(damageGui, 
+			game:GetService("TweenService"):GetInfo(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{StudsOffset = Vector3.new(0, 5, 0)}
+		):Play()
+
+		game:GetService("TweenService"):Create(damageLabel, 
+			game:GetService("TweenService"):GetInfo(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{TextTransparency = 1}
+		):Play()
+
+		-- Clean up
+		game:GetService("Debris"):AddItem(damageGui, 1)
+	end
+
+	-- If enemy died, trigger death
+	if targetHumanoid.Health <= 0 and oldHealth > 0 then
+		print("💀 Enemy killed:", enemy.Name)
+		-- The enemy's death detection system should handle the rest
+	end
+end)
+
+print("🎯 Isaac Shooting Server Handler loaded!")
+print("📡 Ready to process damage from clients")
