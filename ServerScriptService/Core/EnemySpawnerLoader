@@ -13,6 +13,21 @@ local enemySpawnerInstance = EnemySpawner.new()
 _G.EnemySpawner = enemySpawnerInstance
 
 -- ========================================================================
+-- CREATE REMOTE EVENTS
+-- ========================================================================
+
+-- Create the PlayerEnteredRoom RemoteEvent if it doesn't exist
+local roomEnterEvent = ReplicatedStorage:FindFirstChild("PlayerEnteredRoom")
+if not roomEnterEvent then
+	roomEnterEvent = Instance.new("RemoteEvent")
+	roomEnterEvent.Name = "PlayerEnteredRoom"
+	roomEnterEvent.Parent = ReplicatedStorage
+	print("✅ Created PlayerEnteredRoom RemoteEvent")
+else
+	print("✅ PlayerEnteredRoom RemoteEvent already exists")
+end
+
+-- ========================================================================
 -- INTEGRATION WITH ROOM MANAGER
 -- ========================================================================
 
