@@ -1,0 +1,99 @@
+-- SPIKE DAMAGE SCRIPT WITH RAYCAST DETECTION
+-- Place this in ServerScriptService
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+-- Configuration
+local SPIKE_DAMAGE_HITS = 1  -- Number of hits per spike (2 = 1 full heart)
+local SPIKE_DAMAGE_INTERVAL = 0  -- How often to damage while standing on spikes (seconds)
+local SPIKE_TAG = "DamageSpike"  -- Tag for spike parts
+local RAYCAST_DISTANCE = 10  -- How far down to check for spikes
+
+-- Track players on spikes
+local playersOnSpikes = {}
+
+-- Create RemoteEvent for client communication
+local remoteEvent = Instance.new("RemoteEvent")
+remoteEvent.Name = "SpikeHeartDamage"
+remoteEvent.Parent = ReplicatedStorage
+
+-- Function to deal damage using heart system
+local function dealHeartDamage(player, hits)
+	remoteEvent:FireClient(player, hits)
+	print("Dealt", hits, "hits to", player.Name, "via heart system")
+end
+
+-- Function to check if a player is standing on spikes using raycast
+local function isPlayerOnSpikes(player)
+	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+		return false
+	end
+
+	local humanoidRootPart = player.Character.HumanoidRootPart
+	local rayOrigin = humanoidRootPart.Position
+	local rayDirection = Vector3.new(0, -RAYCAST_DISTANCE, 0)
+
+	-- Create raycast params
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+	raycastParams.FilterDescendantsInstances = {player.Character}
+
+	-- Perform raycast
+	local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+
+	if raycastResult then
+		local hitPart = raycastResult.Instance
+		-- Check if the hit part is a spike
+		if string.lower(hitPart.Name):find("spike") or hitPart:HasTag(SPIKE_TAG) then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Main damage loop
+local function damageLoop()
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Character and player.Character:FindFirstChild("Humanoid") then
+			local humanoid = player.Character.Humanoid
+
+			-- Skip dead players
+			if humanoid.Health <= 0 then
+				playersOnSpikes[player.UserId] = nil
+				continue
+			end
+
+			-- Check if player is on spikes
+			if isPlayerOnSpikes(player) then
+				local currentTime = tick()
+				local lastDamageTime = playersOnSpikes[player.UserId] or 0
+
+				-- Deal damage if enough time has passed
+				if currentTime - lastDamageTime >= SPIKE_DAMAGE_INTERVAL then
+					dealHeartDamage(player, SPIKE_DAMAGE_HITS)
+					playersOnSpikes[player.UserId] = currentTime
+
+					-- Optional: Create visual effect
+					
+					
+				end
+			else
+				-- Player is not on spikes, reset their timer
+				playersOnSpikes[player.UserId] = nil
+			end
+		end
+	end
+end
+
+-- Run the damage check every frame (very responsive)
+RunService.Heartbeat:Connect(damageLoop)
+
+-- Clean up when players leave
+Players.PlayerRemoving:Connect(function(player)
+	playersOnSpikes[player.UserId] = nil
+end)
+
+print("Raycast-based spike damage system loaded!")
