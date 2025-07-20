@@ -501,7 +501,6 @@ end
 
 -- Scan for wall openings created by Grid Overlay system
 function SharedDoorManager:scanForWallOpenings()
-	print("🔍 Scanning for wall openings created by Grid Overlay system...")
 
 	local rooms = self:findAllRooms()
 	local doorsCreated = 0
@@ -550,9 +549,7 @@ function SharedDoorManager:checkForNewDoorOpenings()
 	print("🔄 Checking for new door openings...")
 	local newDoors = self:scanForWallOpenings()
 	if newDoors > 0 then
-		print("✅ Created", newDoors, "new doors from wall openings")
 	else
-		print("ℹ️ No new door openings found")
 	end
 end
 
