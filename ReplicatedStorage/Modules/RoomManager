@@ -88,7 +88,7 @@ end
 -- ENEMY TRACKING
 -- ========================================================================
 
--- Add enemy to room tracking
+-- REPLACE your addEnemyToRoom function with this:
 function RoomManager:addEnemyToRoom(roomData, enemy)
 	-- Initialize room tracking if needed
 	if not self.activeRooms[roomData] then
@@ -104,6 +104,12 @@ function RoomManager:addEnemyToRoom(roomData, enemy)
 	self.roomStates[roomData.roomID] = "active"
 
 	print("👹 Added enemy to room:", roomData.roomID, "Count:", self.roomEnemyCounts[roomData])
+
+	-- NEW: Lock doors when first enemy is added
+	if self.roomEnemyCounts[roomData] == 1 then
+		print("🔒 First enemy spawned - locking doors")
+		self:lockRoomDoors(roomData)
+	end
 end
 
 -- Remove enemy from room tracking
@@ -145,7 +151,7 @@ end
 -- ROOM STATE MANAGEMENT
 -- ========================================================================
 
--- Mark room as cleared
+-- REPLACE your onRoomCleared function with this:
 function RoomManager:onRoomCleared(roomData)
 	print("🎉 ROOM CLEARED:", roomData.roomID)
 
@@ -155,7 +161,7 @@ function RoomManager:onRoomCleared(roomData)
 	self.activeRooms[roomData] = nil
 	self.roomEnemyCounts[roomData] = nil
 
-	-- Unlock doors
+	-- NEW: Unlock doors when room is cleared
 	self:unlockRoomDoors(roomData)
 
 	-- Trigger callbacks
@@ -177,6 +183,34 @@ end
 -- Get room state
 function RoomManager:getRoomState(roomID)
 	return self.roomStates[roomID] or "unknown"
+end
+
+-- ADD THESE NEW FUNCTIONS to your RoomManager:
+
+-- Lock doors for a room (delegates to SharedDoorManager)
+function RoomManager:lockRoomDoors(roomData)
+	print("🔒 Locking doors for room:", roomData.roomID)
+
+	if _G.SharedDoorManager then
+		_G.SharedDoorManager:onEnemiesSpawned(roomData.model)
+		print("✅ SharedDoorManager handled door locking")
+	else
+		warn("⚠️ SharedDoorManager not found!")
+		print("💡 Make sure SharedDoorManager script is running")
+	end
+end
+
+-- Unlock doors for a room (delegates to SharedDoorManager)  
+function RoomManager:unlockRoomDoors(roomData)
+	print("🔓 Unlocking doors for room:", roomData.roomID)
+
+	if _G.SharedDoorManager then
+		_G.SharedDoorManager:onEnemiesCleared(roomData.model)
+		print("✅ SharedDoorManager handled door unlocking")
+	else
+		warn("⚠️ SharedDoorManager not found!")
+		print("💡 Make sure SharedDoorManager script is running")
+	end
 end
 
 -- ========================================================================
