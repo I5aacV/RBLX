@@ -1,5 +1,7 @@
--- ISAAC SHOOTING SERVER HANDLER
--- Place this in ServerScriptService
+-- ========================================================================
+-- UPDATED ISAAC SHOOTING SERVER HANDLER WITH DAMAGE NUMBERS
+-- Replace your existing ShootingServerHandler with this
+-- ========================================================================
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -12,14 +14,58 @@ if not shootRemote then
 	shootRemote.Parent = ReplicatedStorage
 end
 
+-- Wait for DamageNumbers system to load
+local function waitForDamageNumbers()
+	local attempts = 0
+	while not _G.DamageNumbers and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+	return _G.DamageNumbers
+end
+
+-- Get player's actual damage (integrates with ItemEffects if available)
+local function getPlayerDamage(player)
+	local baseDamage = 10 -- Default damage
+
+	-- Try to get enhanced damage from ItemEffects system
+	if _G.ItemEffects then
+		local actualDamage = _G.ItemEffects:GetPlayerDamage(player)
+		if actualDamage then
+			return math.floor(actualDamage) -- Round down for clean numbers
+		end
+	end
+
+	return baseDamage
+end
+
+-- Determine if damage is critical (random chance or based on player stats)
+local function isCriticalHit(player, damage)
+	-- Basic critical chance (you can enhance this with luck stats)
+	local critChance = 0.1 -- 10% base crit chance
+
+	-- Try to get luck from ItemEffects
+	if _G.ItemEffects then
+		local playerData = _G.ItemEffects:GetPlayerData(player)
+		if playerData and playerData.stats and playerData.stats.luck then
+			-- Each luck point adds 2% crit chance
+			critChance = critChance + (playerData.stats.luck * 0.02)
+		end
+	end
+
+	return math.random() < critChance
+end
+
 -- Handle shoot requests from clients
-shootRemote.OnServerEvent:Connect(function(player, targetHumanoid, damage, hitPosition)
+shootRemote.OnServerEvent:Connect(function(player, targetHumanoid, clientDamage, hitPosition)
 	-- Validate the request
 	if not player or not player.Character then
+		print("⚠️ Invalid player in shoot request")
 		return
 	end
 
 	if not targetHumanoid or not targetHumanoid.Parent then
+		print("⚠️ Invalid target in shoot request")
 		return
 	end
 
@@ -49,59 +95,100 @@ shootRemote.OnServerEvent:Connect(function(player, targetHumanoid, damage, hitPo
 		return
 	end
 
+	-- Get actual damage from player's stats (server-authoritative)
+	local actualDamage = getPlayerDamage(player)
+
+	-- Check for critical hit
+	local isCrit = isCriticalHit(player, actualDamage)
+	if isCrit then
+		actualDamage = math.floor(actualDamage * 1.5) -- 1.5x damage for crits
+	end
+
 	-- Apply damage
 	local oldHealth = targetHumanoid.Health
-	targetHumanoid.Health = math.max(0, oldHealth - damage)
+	targetHumanoid.Health = math.max(0, oldHealth - actualDamage)
 
-	print("💥 Player", player.Name, "dealt", damage, "damage to", enemy.Name)
+	print("💥 Player", player.Name, "dealt", actualDamage, "damage to", enemy.Name, isCrit and "(CRIT!)" or "")
 	print("   Health:", oldHealth, "→", targetHumanoid.Health)
 
-	-- Create damage effect at hit position
+	-- Show damage numbers (server-side, visible to all players)
+	if _G.DamageNumbers and hitPosition then
+		local damageType = isCrit and "critical" or "normal"
+		-- Ensure we pass the damage as a number
+		_G.DamageNumbers:showDamage(enemy, actualDamage, hitPosition, damageType)
+	else
+		if not _G.DamageNumbers then
+			warn("⚠️ DamageNumbers system not found!")
+		end
+	end
+
+	-- Create hit effect at position
 	if hitPosition then
 		local effect = Instance.new("Explosion")
 		effect.Position = hitPosition
-		effect.BlastRadius = 2
+		effect.BlastRadius = isCrit and 4 or 2 -- Bigger explosion for crits
 		effect.BlastPressure = 0
 		effect.Visible = true
 		effect.Parent = workspace
 
-		-- Optional: Create floating damage number
-		local damageGui = Instance.new("BillboardGui")
-		damageGui.Size = UDim2.new(0, 100, 0, 50)
-		damageGui.StudsOffset = Vector3.new(0, 2, 0)
-		damageGui.Parent = workspace
-
-		local damageLabel = Instance.new("TextLabel")
-		damageLabel.Size = UDim2.new(1, 0, 1, 0)
-		damageLabel.BackgroundTransparency = 1
-		damageLabel.Text = "-" .. tostring(damage)
-		damageLabel.TextColor3 = Color3.new(1, 1, 1)
-		damageLabel.TextScaled = true
-		damageLabel.TextStrokeTransparency = 0
-		damageLabel.Font = Enum.Font.SourceSansBold
-		damageLabel.Parent = damageGui
-
-		-- Animate damage number
-		game:GetService("TweenService"):Create(damageGui, 
-			game:GetService("TweenService"):GetInfo(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-			{StudsOffset = Vector3.new(0, 5, 0)}
-		):Play()
-
-		game:GetService("TweenService"):Create(damageLabel, 
-			game:GetService("TweenService"):GetInfo(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-			{TextTransparency = 1}
-		):Play()
-
-		-- Clean up
-		game:GetService("Debris"):AddItem(damageGui, 1)
+		-- Critical hits get enhanced effects
+		if isCrit then
+			-- Create additional spark effect for crits
+			task.spawn(function()
+				for i = 1, 3 do
+					task.wait(0.1)
+					local spark = Instance.new("Explosion")
+					spark.Position = hitPosition + Vector3.new(
+						(math.random() - 0.5) * 4,
+						(math.random() - 0.5) * 4,
+						(math.random() - 0.5) * 4
+					)
+					spark.BlastRadius = 1
+					spark.BlastPressure = 0
+					spark.Parent = workspace
+				end
+			end)
+		end
 	end
 
 	-- If enemy died, trigger death
 	if targetHumanoid.Health <= 0 and oldHealth > 0 then
-		print("💀 Enemy killed:", enemy.Name)
+		print("💀 Enemy killed:", enemy.Name, "by", player.Name)
+
+		-- Show death damage number if it was a killing blow
+		if _G.DamageNumbers and hitPosition then
+			-- Brief delay so death number appears after damage number
+			task.spawn(function()
+				task.wait(0.3)
+				_G.DamageNumbers:createDamageNumber(
+					hitPosition + Vector3.new(0, 3, 0), 
+					"KILLED", 
+					"death", 
+					enemy.Name
+				)
+			end)
+		end
+
 		-- The enemy's death detection system should handle the rest
 	end
 end)
 
-print("🎯 Isaac Shooting Server Handler loaded!")
-print("📡 Ready to process damage from clients")
+-- Initialize damage numbers integration
+task.spawn(function()
+	local damageNumbers = waitForDamageNumbers()
+	if damageNumbers then
+		print("✅ Shooting handler integrated with damage numbers system")
+	else
+		warn("❌ Failed to connect to damage numbers system")
+	end
+end)
+
+print("🎯 Updated Isaac Shooting Server Handler loaded!")
+print("📡 Ready to process damage with server-side damage numbers")
+print("💥 Features:")
+print("  ✅ Server-authoritative damage calculation")
+print("  ✅ Critical hit system with luck integration")
+print("  ✅ ItemEffects integration for enhanced damage")
+print("  ✅ Damage numbers visible to all players")
+print("  ✅ Enhanced effects for critical hits")
+print("  ✅ Death confirmation numbers")
