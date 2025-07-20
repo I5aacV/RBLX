@@ -1,0 +1,310 @@
+-- ========================================================================
+-- ROOM MANAGER - Central Room State Management
+-- ModuleScript in ReplicatedStorage/Modules/RoomManager
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+
+local RoomManager = {}
+RoomManager.__index = RoomManager
+
+-- ========================================================================
+-- ROOM STATE TRACKING
+-- ========================================================================
+
+function RoomManager.new()
+	local self = setmetatable({}, RoomManager)
+
+	-- Core room tracking
+	self.activeRooms = {}        -- {roomData -> {enemy1, enemy2, ...}}
+	self.clearedRooms = {}       -- {roomData -> true}
+	self.roomEnemyCounts = {}    -- {roomData -> number}
+	self.roomStates = {}         -- {roomID -> "active"/"cleared"/"empty"}
+
+	-- Room metadata
+	self.roomDataById = {}       -- {roomID -> roomData}
+	self.roomConnections = {}    -- {roomID -> {North=true, South=false, ...}}
+
+	-- Callbacks for other systems
+	self.onRoomClearedCallbacks = {}
+	self.onEnemyDiedCallbacks = {}
+	self.onRoomEnteredCallbacks = {}
+
+	print("🏠 RoomManager initialized")
+	return self
+end
+
+-- ========================================================================
+-- ROOM REGISTRATION
+-- ========================================================================
+
+-- Register a room with the manager
+function RoomManager:registerRoom(roomModel, roomType, connections, gridX, gridY)
+	local roomID = self:generateRoomID(roomModel, roomType, gridX, gridY)
+
+	local roomData = {
+		model = roomModel,
+		roomType = roomType or "Normal",
+		connections = connections or {},
+		gridX = gridX,
+		gridY = gridY,
+		roomID = roomID,
+		floor = self:findRoomFloor(roomModel)
+	}
+
+	-- Store room data
+	self.roomDataById[roomID] = roomData
+	self.roomConnections[roomID] = connections
+	self.roomStates[roomID] = "empty"
+
+	print("🏠 Registered room:", roomID, "Type:", roomType)
+	return roomData
+end
+
+-- Generate consistent room ID
+function RoomManager:generateRoomID(roomModel, roomType, gridX, gridY)
+	if gridX and gridY then
+		return roomType .. "Room_" .. gridX .. "_" .. gridY
+	else
+		return roomModel.Name
+	end
+end
+
+-- Find floor in room model
+function RoomManager:findRoomFloor(roomModel)
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (
+			string.lower(child.Name):find("floor") or
+				(child.Size.X >= 100 and child.Size.Z >= 70)
+			) then
+			return child
+		end
+	end
+	return nil
+end
+
+-- ========================================================================
+-- ENEMY TRACKING
+-- ========================================================================
+
+-- Add enemy to room tracking
+function RoomManager:addEnemyToRoom(roomData, enemy)
+	-- Initialize room tracking if needed
+	if not self.activeRooms[roomData] then
+		self.activeRooms[roomData] = {}
+		self.roomEnemyCounts[roomData] = 0
+	end
+
+	-- Add enemy to tracking
+	table.insert(self.activeRooms[roomData], enemy)
+	self.roomEnemyCounts[roomData] = self.roomEnemyCounts[roomData] + 1
+
+	-- Update room state
+	self.roomStates[roomData.roomID] = "active"
+
+	print("👹 Added enemy to room:", roomData.roomID, "Count:", self.roomEnemyCounts[roomData])
+end
+
+-- Remove enemy from room tracking
+function RoomManager:removeEnemyFromRoom(roomData, enemy)
+	if not self.roomEnemyCounts[roomData] then
+		warn("❌ No enemy count for room:", roomData.roomID)
+		return
+	end
+
+	-- Remove from tracking list
+	if self.activeRooms[roomData] then
+		for i = #self.activeRooms[roomData], 1, -1 do
+			if self.activeRooms[roomData][i] == enemy then
+				table.remove(self.activeRooms[roomData], i)
+				print("✅ Removed enemy from tracking list")
+				break
+			end
+		end
+	end
+
+	-- Update count
+	self.roomEnemyCounts[roomData] = math.max(0, self.roomEnemyCounts[roomData] - 1)
+	local remaining = self.roomEnemyCounts[roomData]
+
+	print("💀 Enemy died | Remaining in", roomData.roomID .. ":", remaining)
+
+	-- Check if room is cleared
+	if remaining <= 0 then
+		self:onRoomCleared(roomData)
+	end
+
+	-- Trigger callbacks
+	for _, callback in pairs(self.onEnemyDiedCallbacks) do
+		callback(roomData, enemy, remaining)
+	end
+end
+
+-- ========================================================================
+-- ROOM STATE MANAGEMENT
+-- ========================================================================
+
+-- Mark room as cleared
+function RoomManager:onRoomCleared(roomData)
+	print("🎉 ROOM CLEARED:", roomData.roomID)
+
+	-- Update state
+	self.clearedRooms[roomData] = true
+	self.roomStates[roomData.roomID] = "cleared"
+	self.activeRooms[roomData] = nil
+	self.roomEnemyCounts[roomData] = nil
+
+	-- Unlock doors
+	self:unlockRoomDoors(roomData)
+
+	-- Trigger callbacks
+	for _, callback in pairs(self.onRoomClearedCallbacks) do
+		callback(roomData)
+	end
+end
+
+-- Check if room is cleared
+function RoomManager:isRoomCleared(roomData)
+	return self.clearedRooms[roomData] == true
+end
+
+-- Get enemy count for room
+function RoomManager:getEnemyCount(roomData)
+	return self.roomEnemyCounts[roomData] or 0
+end
+
+-- Get room state
+function RoomManager:getRoomState(roomID)
+	return self.roomStates[roomID] or "unknown"
+end
+
+-- ========================================================================
+-- DOOR MANAGEMENT INTEGRATION
+-- ========================================================================
+
+-- Lock doors for a room (delegates to SharedDoorManager)
+function RoomManager:lockRoomDoors(roomData)
+	print("🔒 Locking doors for room:", roomData.roomID)
+
+	if _G.SharedDoorManager then
+		_G.SharedDoorManager:lockRoomDoors(roomData.model)
+	else
+		warn("⚠️ SharedDoorManager not found!")
+	end
+end
+
+-- Unlock doors for a room (delegates to SharedDoorManager)
+function RoomManager:unlockRoomDoors(roomData)
+	print("🔓 Unlocking doors for room:", roomData.roomID)
+
+	if _G.SharedDoorManager then
+		_G.SharedDoorManager:unlockRoomDoors(roomData.model)
+	else
+		warn("⚠️ SharedDoorManager not found!")
+	end
+end
+
+-- ========================================================================
+-- CALLBACK SYSTEM
+-- ========================================================================
+
+-- Register callback for when rooms are cleared
+function RoomManager:onRoomCleared(callback)
+	table.insert(self.onRoomClearedCallbacks, callback)
+end
+
+-- Register callback for when enemies die
+function RoomManager:onEnemyDied(callback)
+	table.insert(self.onEnemyDiedCallbacks, callback)
+end
+
+-- Register callback for when player enters room
+function RoomManager:onRoomEntered(callback)
+	table.insert(self.onRoomEnteredCallbacks, callback)
+end
+
+-- ========================================================================
+-- PLAYER ROOM TRACKING
+-- ========================================================================
+
+-- Handle player entering a room
+function RoomManager:onPlayerEnteredRoom(roomID)
+	local roomData = self.roomDataById[roomID]
+	if not roomData then
+		warn("⚠️ Room not found:", roomID)
+		return
+	end
+
+	print("🚪 Player entered room:", roomID)
+
+	-- Trigger callbacks
+	for _, callback in pairs(self.onRoomEnteredCallbacks) do
+		callback(roomData)
+	end
+
+	return roomData
+end
+
+-- ========================================================================
+-- DEBUG AND UTILITY
+-- ========================================================================
+
+-- Get all room data
+function RoomManager:getAllRooms()
+	return self.roomDataById
+end
+
+-- Get active rooms
+function RoomManager:getActiveRooms()
+	local active = {}
+	for roomData, _ in pairs(self.activeRooms) do
+		table.insert(active, roomData)
+	end
+	return active
+end
+
+-- Print debug info
+function RoomManager:debugPrint()
+	print("=== 🏠 ROOM MANAGER DEBUG ===")
+	print("📊 Total rooms registered:", self:getTotalRoomCount())
+	print("⚔️ Active rooms:", self:getActiveRoomCount())
+	print("✅ Cleared rooms:", self:getClearedRoomCount())
+
+	for roomData, count in pairs(self.roomEnemyCounts) do
+		if count > 0 then
+			print("🏠", roomData.roomID, "- Enemies:", count)
+		end
+	end
+end
+
+-- Get statistics
+function RoomManager:getTotalRoomCount()
+	local count = 0
+	for _ in pairs(self.roomDataById) do
+		count = count + 1
+	end
+	return count
+end
+
+function RoomManager:getActiveRoomCount()
+	local count = 0
+	for _ in pairs(self.activeRooms) do
+		count = count + 1
+	end
+	return count
+end
+
+function RoomManager:getClearedRoomCount()
+	local count = 0
+	for _ in pairs(self.clearedRooms) do
+		count = count + 1
+	end
+	return count
+end
+
+-- ========================================================================
+-- EXPORT
+-- ========================================================================
+
+return RoomManager
