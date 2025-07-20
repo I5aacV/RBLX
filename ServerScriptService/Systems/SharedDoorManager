@@ -75,6 +75,260 @@ function SharedDoorManager.new()
 	return self
 end
 
+-- ADD THIS FUNCTION (it's missing but called by enemy integration):
+function SharedDoorManager:findRoomFloor(roomModel)
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (
+			string.lower(child.Name):find("floor") or 
+				(child.Size.X >= 100 and child.Size.Z >= 80 and child.Size.Y <= 5)
+			) then
+			return child
+		end
+	end
+	return nil
+end
+
+-- ALSO ADD THIS CHECK to prevent errors if someone tries to lock doors before SharedDoors are created:
+function SharedDoorManager:hasAnyDoorsForRoom(roomName)
+	for doorKey, door in pairs(self.doors) do
+		local room1 = door:GetAttribute("Room1")
+		local room2 = door:GetAttribute("Room2")
+
+		if room1 == roomName or room2 == roomName then
+			return true
+		end
+	end
+	return false
+end
+
+-- UPDATE your lockRoomDoorsForEnemies function to use this check:
+function SharedDoorManager:lockRoomDoorsForEnemies(roomModel)
+	print("🔒 ENEMY SPAWN: Locking doors for room:", roomModel.Name)
+
+	local roomName = roomModel.Name
+	local doorsLocked = 0
+
+	-- Only try to lock shared doors if they exist
+	if self:hasAnyDoorsForRoom(roomName) then
+		for doorKey, door in pairs(self.doors) do
+			local room1 = door:GetAttribute("Room1")
+			local room2 = door:GetAttribute("Room2")
+
+			-- If this door connects to the room with enemies
+			if room1 == roomName or room2 == roomName then
+				local currentState = door:GetAttribute("State")
+
+				-- Lock BOTH closed AND unlocked doors when enemies spawn
+				if currentState == DoorState.CLOSED or currentState == DoorState.UNLOCKED then
+					-- Store the previous state so we can restore it later
+					door:SetAttribute("PreviousState", currentState)
+					self:setDoorState(door, DoorState.LOCKED)
+					print("  🔒 Enemy-locked door:", door.Name, "(was", currentState .. ")")
+					doorsLocked = doorsLocked + 1
+				end
+			end
+		end
+	end
+
+	-- Create backup barriers if no shared doors found or locked
+	if doorsLocked == 0 then
+		print("⚠️ No shared doors available, creating backup barriers")
+		self:createEnemyBarriers(roomModel)
+	else
+		print("🔒 Locked", doorsLocked, "shared doors for enemy spawn")
+	end
+end
+
+-- ========================================================================
+-- ENEMY INTEGRATION FUNCTIONS - ADD THESE TO SharedDoorManager
+-- ========================================================================
+
+-- Lock all doors when enemies spawn in a room
+function SharedDoorManager:lockRoomDoorsForEnemies(roomModel)
+	print("🔒 ENEMY SPAWN: Locking doors for room:", roomModel.Name)
+
+	local roomName = roomModel.Name
+	local doorsLocked = 0
+
+	for doorKey, door in pairs(self.doors) do
+		local room1 = door:GetAttribute("Room1")
+		local room2 = door:GetAttribute("Room2")
+
+		-- If this door connects to the room with enemies
+		if room1 == roomName or room2 == roomName then
+			local currentState = door:GetAttribute("State")
+
+			-- Lock BOTH closed AND unlocked doors when enemies spawn
+			if currentState == DoorState.CLOSED or currentState == DoorState.UNLOCKED then
+				-- Store the previous state so we can restore it later
+				door:SetAttribute("PreviousState", currentState)
+				self:setDoorState(door, DoorState.LOCKED)
+				print("  🔒 Enemy-locked door:", door.Name, "(was", currentState .. ")")
+				doorsLocked = doorsLocked + 1
+			end
+		end
+	end
+
+	-- Also create backup barriers if no shared doors found
+	if doorsLocked == 0 then
+		print("⚠️ No shared doors found, creating backup barriers")
+		self:createEnemyBarriers(roomModel)
+	end
+
+	print("🔒 Locked", doorsLocked, "doors for enemy spawn")
+end
+
+-- Unlock doors when all enemies are cleared
+function SharedDoorManager:unlockRoomDoorsAfterClear(roomModel)
+	print("🔓 ENEMIES CLEARED: Unlocking doors for room:", roomModel.Name)
+
+	local roomName = roomModel.Name
+	local doorsUnlocked = 0
+
+	for doorKey, door in pairs(self.doors) do
+		local room1 = door:GetAttribute("Room1")
+		local room2 = door:GetAttribute("Room2")
+
+		-- If this door connects to the cleared room
+		if room1 == roomName or room2 == roomName then
+			local currentState = door:GetAttribute("State")
+
+			-- Only unlock LOCKED doors
+			if currentState == DoorState.LOCKED then
+				-- Get the previous state (what it was before locking)
+				local previousState = door:GetAttribute("PreviousState")
+
+				-- If no previous state stored, default to CLOSED
+				if not previousState then
+					previousState = DoorState.CLOSED
+				end
+
+				-- Restore to previous state
+				self:setDoorState(door, previousState)
+				print("  🔓 Restored door:", door.Name, "to", previousState)
+
+				-- Clear the stored previous state
+				door:SetAttribute("PreviousState", nil)
+				doorsUnlocked = doorsUnlocked + 1
+			end
+		end
+	end
+
+	-- Remove backup barriers
+	self:removeEnemyBarriers(roomModel)
+
+	print("🔓 Unlocked", doorsUnlocked, "doors for room clear")
+end
+
+-- Create backup barriers if shared doors don't exist yet
+function SharedDoorManager:createEnemyBarriers(roomModel)
+	local roomFloor = self:findRoomFloor(roomModel)
+	if not roomFloor then 
+		print("❌ No floor found for barriers in:", roomModel.Name)
+		return 
+	end
+
+	local floorPosition = roomFloor.Position
+	local floorSize = roomFloor.Size
+
+	-- Don't create barriers if they already exist
+	if roomModel:FindFirstChild("EnemyBarriers") then
+		print("⚠️ Enemy barriers already exist for:", roomModel.Name)
+		return
+	end
+
+	local barriersFolder = Instance.new("Folder")
+	barriersFolder.Name = "EnemyBarriers"
+	barriersFolder.Parent = roomModel
+
+	-- Create barriers for each potential door location
+	local doorPositions = {
+		{name = "North", pos = floorPosition + Vector3.new(0, 6, -floorSize.Z/2 - 1), size = Vector3.new(12, 12, 2)},
+		{name = "South", pos = floorPosition + Vector3.new(0, 6, floorSize.Z/2 + 1), size = Vector3.new(12, 12, 2)},
+		{name = "East", pos = floorPosition + Vector3.new(floorSize.X/2 + 1, 6, 0), size = Vector3.new(2, 12, 12)},
+		{name = "West", pos = floorPosition + Vector3.new(-floorSize.X/2 - 1, 6, 0), size = Vector3.new(2, 12, 12)}
+	}
+
+	local barriersCreated = 0
+	for _, doorData in pairs(doorPositions) do
+		-- Only create barrier if there's no SharedDoor here
+		if not self:hasSharedDoorAt(roomModel.Name, doorData.name) then
+			self:createEnemyBarrier(barriersFolder, doorData.name, doorData.pos, doorData.size)
+			barriersCreated = barriersCreated + 1
+		end
+	end
+
+	print("🚧 Created", barriersCreated, "backup enemy barriers for:", roomModel.Name)
+end
+
+-- Remove enemy barriers
+function SharedDoorManager:removeEnemyBarriers(roomModel)
+	local barriersFolder = roomModel:FindFirstChild("EnemyBarriers")
+	if barriersFolder then
+		-- Flash green briefly before removing
+		for _, barrier in pairs(barriersFolder:GetChildren()) do
+			if barrier:IsA("BasePart") then
+				barrier.BrickColor = BrickColor.new("Bright green")
+				local gui = barrier:FindFirstChild("SurfaceGui")
+				if gui then
+					local label = gui:FindFirstChild("TextLabel")
+					if label then
+						label.Text = "✅ ROOM CLEARED! ✅"
+						label.TextColor3 = Color3.new(0, 1, 0)
+					end
+				end
+			end
+		end
+
+		-- Remove after delay
+		game:GetService("Debris"):AddItem(barriersFolder, 1.0)
+		print("🚧 Removed enemy barriers for:", roomModel.Name)
+	end
+end
+
+-- Check if SharedDoor exists at this position
+function SharedDoorManager:hasSharedDoorAt(roomName, direction)
+	for doorKey, door in pairs(self.doors) do
+		local room1 = door:GetAttribute("Room1")
+		local room2 = door:GetAttribute("Room2")
+		local doorDirection = door:GetAttribute("Direction")
+
+		if (room1 == roomName or room2 == roomName) and doorDirection == direction then
+			return true
+		end
+	end
+	return false
+end
+
+-- Create a single enemy barrier
+function SharedDoorManager:createEnemyBarrier(parent, direction, position, size)
+	local barrier = Instance.new("Part")
+	barrier.Name = direction .. "EnemyBarrier"
+	barrier.Size = size
+	barrier.Position = position
+	barrier.Anchored = true
+	barrier.CanCollide = true
+	barrier.BrickColor = BrickColor.new("Really black")
+	barrier.Material = Enum.Material.Concrete
+	barrier.Parent = parent
+
+	-- Add warning text
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.Parent = barrier
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text = "🚫 CLEAR ENEMIES 🚫"
+	label.TextColor3 = Color3.new(1, 0, 0)
+	label.TextScaled = true
+	label.Font = Enum.Font.SourceSansBold
+	label.Parent = gui
+
+	print("🚧 Created enemy barrier:", direction, "at", position)
+end
+
 -- ========================================================================
 -- REMOTE EVENT HANDLERS
 -- ========================================================================
@@ -613,6 +867,20 @@ end
 function SharedDoorManager:refreshDoors()
 	print("🔄 Force refreshing all doors...")
 	self:initialize()
+end
+
+-- ========================================================================
+-- PUBLIC API FOR ROOMMANAGER INTEGRATION
+-- ========================================================================
+
+-- Call this when enemies spawn in a room (from RoomManager)
+function SharedDoorManager:onEnemiesSpawned(roomModel)
+	self:lockRoomDoorsForEnemies(roomModel)
+end
+
+-- Call this when all enemies are cleared from a room (from RoomManager)
+function SharedDoorManager:onEnemiesCleared(roomModel)
+	self:unlockRoomDoorsAfterClear(roomModel)
 end
 
 -- ========================================================================
