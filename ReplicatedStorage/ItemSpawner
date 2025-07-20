@@ -1,0 +1,522 @@
+-- ======================================================================== 
+-- COMPLETE FIXED ITEM SPAWNING SYSTEM
+-- Replace your entire ItemSpawner script with this
+-- ======================================================================== 
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+-- Configuration
+local CONFIG = {
+	TREASURE_ROOM_ITEMS = 1, -- Items per treasure room
+	PEDESTAL_HEIGHT = 1, -- Height above floor
+	SPAWN_ANIMATION_TIME = 1.0,
+	PICKUP_ANIMATION_TIME = 0.5,
+	-- Item pools by room type
+	ITEM_POOLS = {
+		TREASURE = {"sad_onion", "magic_mushroom", "inner_eye", "sacred_heart"},
+		SHOP = {"breakfast", "lunch", "speed_ball"},
+		BOSS = {"mom_knife", "brimstone", "technology"},
+		SECRET = {"godhead", "dead_cat", "cursed_eye"}
+	}
+}
+
+-- ======================================================================== 
+-- ITEM SPAWNER CLASS
+-- ======================================================================== 
+
+local ItemSpawner = {}
+ItemSpawner.__index = ItemSpawner
+
+function ItemSpawner.new()
+	local self = setmetatable({}, ItemSpawner)
+	self.spawnedItems = {}
+	self.itemTemplates = {}
+	self:loadTemplates()
+	self:setupIntegration()
+	return self
+end
+
+-- ======================================================================== 
+-- UPDATED TEMPLATE LOADING (FIXED)
+-- ======================================================================== 
+
+function ItemSpawner:loadTemplates()
+	print("🔍 Loading item templates from organized folders...")
+
+	-- Method 1: Load from ReplicatedStorage/ItemTemplates folder
+	local itemTemplatesFolder = ReplicatedStorage:FindFirstChild("ItemTemplates")
+	if itemTemplatesFolder then
+		self:loadFromFolder(itemTemplatesFolder)
+	else
+		warn("⚠️ ItemTemplates folder not found in ReplicatedStorage!")
+		print("📁 Create: ReplicatedStorage/ItemTemplates/")
+		print("📁 Then put your ItemTemplate_[name] models inside")
+	end
+
+	-- Fallback: Load from workspace (old method)
+	if self:getTemplateCount() == 0 then
+		print("🔄 No templates in folder, checking workspace...")
+		self:loadFromWorkspace()
+	end
+
+	print("📦 Loaded", self:getTemplateCount(), "item templates total")
+
+	if self:getTemplateCount() == 0 then
+		warn("❌ NO ITEM TEMPLATES FOUND!")
+		print("💡 Make sure to create ItemTemplate_[name] models")
+		print("💡 Place them in ReplicatedStorage/ItemTemplates/")
+	end
+end
+
+-- NEW FUNCTION: Load from organized folder structure
+function ItemSpawner:loadFromFolder(parentFolder)
+	print("📁 Scanning folder:", parentFolder.Name)
+
+	-- Recursive function to search all subfolders
+	local function scanFolder(folder, depth)
+		depth = depth or 0
+		local indent = string.rep("  ", depth)
+
+		for _, child in pairs(folder:GetChildren()) do
+			if child:IsA("Model") and string.find(child.Name, "ItemTemplate_") then
+				-- Found an item template
+				local itemId = child.Name:gsub("ItemTemplate_", "")
+				self.itemTemplates[itemId] = child
+				print(indent .. "✅ Loaded:", itemId, "from", folder.Name)
+
+			elseif child:IsA("Folder") then
+				-- Recursively scan subfolders
+				print(indent .. "📂 Scanning subfolder:", child.Name)
+				scanFolder(child, depth + 1)
+			end
+		end
+	end
+
+	-- Start scanning from the main folder
+	scanFolder(parentFolder)
+end
+
+-- UPDATED FUNCTION: Load from workspace (fallback)
+function ItemSpawner:loadFromWorkspace()
+	print("🔄 Fallback: Loading from workspace...")
+
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and string.find(obj.Name, "ItemTemplate_") then
+			local itemId = obj.Name:gsub("ItemTemplate_", "")
+
+			-- Move to ReplicatedStorage for organization
+			obj.Parent = ReplicatedStorage
+			self.itemTemplates[itemId] = obj
+			print("📦 Moved from workspace:", itemId)
+		end
+	end
+end
+
+function ItemSpawner:getTemplateCount()
+	local count = 0
+	for _ in pairs(self.itemTemplates) do
+		count = count + 1
+	end
+	return count
+end
+
+-- NEW FUNCTION: List all loaded templates (for debugging)
+function ItemSpawner:listTemplates()
+	print("📋 LOADED ITEM TEMPLATES:")
+	local categories = {}
+
+	for itemId, template in pairs(self.itemTemplates) do
+		local category = "Uncategorized"
+
+		-- Try to determine category from parent folder
+		if template.Parent and template.Parent.Name ~= "ItemTemplates" then
+			category = template.Parent.Name
+		end
+
+		if not categories[category] then
+			categories[category] = {}
+		end
+		table.insert(categories[category], itemId)
+	end
+
+	-- Print organized by category
+	for category, items in pairs(categories) do
+		print("📂", category .. ":")
+		for _, itemId in pairs(items) do
+			print("  ✅", itemId)
+		end
+	end
+
+	print("📊 Total templates:", self:getTemplateCount())
+end
+
+-- Setup integration with other systems
+function ItemSpawner:setupIntegration()
+	-- Connect to treasure room creation
+	if _G.DungeonGenerator then
+		print("🔗 Connected to DungeonGenerator")
+	else
+		print("⚠️ DungeonGenerator not found - using fallback detection")
+	end
+end
+
+-- ======================================================================== 
+-- ROOM DETECTION
+-- ======================================================================== 
+
+function ItemSpawner:findRoomFloor(roomModel)
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (
+			string.lower(child.Name):find("floor") or
+				(child.Size.X >= 100 and child.Size.Z >= 70)
+			) then
+			return child
+		end
+	end
+	return nil
+end
+
+function ItemSpawner:isTreasureRoom(roomModel)
+	return string.find(roomModel.Name or "", "Treasure")
+end
+
+function ItemSpawner:getRoomType(roomModel)
+	local name = roomModel.Name or ""
+	if string.find(name, "Treasure") then return "TREASURE"
+	elseif string.find(name, "Shop") then return "SHOP"
+	elseif string.find(name, "Boss") then return "BOSS"
+	elseif string.find(name, "Secret") then return "SECRET"
+	else return "NORMAL"
+	end
+end
+
+-- ======================================================================== 
+-- ITEM SPAWNING
+-- ======================================================================== 
+
+function ItemSpawner:spawnItemInRoom(roomModel, itemId, position)
+	local template = self.itemTemplates[itemId]
+	if not template then
+		warn("❌ No template for item:", itemId)
+		return nil
+	end
+
+	-- Clone and position item
+	local item = template:Clone()
+	item.Name = "Item_" .. itemId .. "_" .. tick()
+	item.Parent = roomModel
+	self:positionItem(item, position)
+	self:setupItemVisuals(item, itemId)
+	self:setupItemInteraction(item, itemId)
+	self:playSpawnAnimation(item)
+
+	-- Track spawned item
+	table.insert(self.spawnedItems, {
+		item = item,
+		itemId = itemId,
+		room = roomModel
+	})
+
+	print("✨ Spawned item:", itemId, "at", position)
+	return item
+end
+
+function ItemSpawner:positionItem(item, position)
+	if item.PrimaryPart then
+		item:SetPrimaryPartCFrame(CFrame.new(position))
+	else
+		-- Fallback positioning
+		local mainPart = item:FindFirstChild("ItemPedestal") or
+			item:FindFirstChildOfClass("BasePart")
+		if mainPart then
+			local offset = position - mainPart.Position
+			for _, part in pairs(item:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Position = part.Position + offset
+				end
+			end
+		end
+	end
+end
+
+-- ======================================================================== 
+-- FIXED: SINGLE setupItemVisuals FUNCTION WITH RARITY SUPPORT
+-- ======================================================================== 
+
+function ItemSpawner:setupItemVisuals(item, itemId)
+	local visual = item:FindFirstChild("ItemVisual")
+	if not visual then return end
+
+	-- Get item data and apply rarity color if ItemDatabase exists
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function() 
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase then
+			local itemData = ItemDatabase:GetItem(itemId)
+			if itemData then
+				local rarity = ItemDatabase:GetRarityInfo(itemData.rarity)
+				if rarity then
+					visual.Color = rarity.color
+					visual.Material = Enum.Material.Neon
+
+					-- Add glow effect with rarity color
+					local light = Instance.new("PointLight")
+					light.Color = rarity.glowColor
+					light.Brightness = 2
+					light.Range = 10
+					light.Parent = visual
+
+					print("🎨 Applied", rarity.name, "rarity effects to", itemData.name)
+				end
+			end
+		else
+			-- Fallback: Basic visual effects without rarity system
+			print("⚠️ ItemDatabase not found, using basic visuals")
+			self:applyBasicVisuals(visual)
+		end
+	else
+		-- Fallback: Basic visual effects
+		self:applyBasicVisuals(visual)
+	end
+
+	-- Add floating animation
+	self:addFloatingAnimation(visual)
+end
+
+function ItemSpawner:applyBasicVisuals(visual)
+	-- Basic glow effect without rarity
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 255, 255)
+	light.Brightness = 1
+	light.Range = 8
+	light.Parent = visual
+end
+
+function ItemSpawner:addFloatingAnimation(part)
+	local originalPosition = part.Position
+	local function createFloatLoop()
+		local upTween = TweenService:Create(part,
+			TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{Position = originalPosition + Vector3.new(0, 0.5, 0)}
+		)
+		local downTween = TweenService:Create(part,
+			TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{Position = originalPosition}
+		)
+
+		upTween.Completed:Connect(function()
+			downTween:Play()
+		end)
+		downTween.Completed:Connect(function()
+			createFloatLoop()
+		end)
+		upTween:Play()
+	end
+	createFloatLoop()
+end
+
+function ItemSpawner:setupItemInteraction(item, itemId)
+	local visual = item:FindFirstChild("ItemVisual")
+	if not visual then return end
+
+	-- Create ProximityPrompt
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Pickup"
+	prompt.ObjectText = itemId:gsub("_", " "):upper()
+	prompt.MaxActivationDistance = 8
+	prompt.HoldDuration = 0
+	prompt.Parent = visual
+
+	-- Connect pickup event
+	prompt.Triggered:Connect(function(player)
+		self:pickupItem(player, item, itemId)
+	end)
+end
+
+function ItemSpawner:pickupItem(player, item, itemId)
+	if not player or not player.Character then return end
+
+	-- Add item to player (requires ItemEffects system)
+	if _G.ItemEffects then
+		local success = _G.ItemEffects:AddItem(player, itemId)
+		if success then
+			self:playPickupAnimation(item, player)
+			self:removeItemFromTracking(item)
+			-- Print player stats to see the effect
+			_G.ItemEffects:PrintPlayerStats(player)
+			print("✅ Player", player.Name, "picked up:", itemId)
+		else
+			print("❌ Failed to add item to player")
+		end
+	else
+		warn("❌ ItemEffects system not found!")
+	end
+end
+
+function ItemSpawner:playSpawnAnimation(item)
+	local visual = item:FindFirstChild("ItemVisual")
+	if not visual then return end
+
+	local originalSize = visual.Size
+	visual.Size = Vector3.new(0.1, 0.1, 0.1)
+	visual.Transparency = 1
+
+	local tween = TweenService:Create(visual,
+		TweenInfo.new(CONFIG.SPAWN_ANIMATION_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{Size = originalSize, Transparency = 0}
+	)
+	tween:Play()
+end
+
+function ItemSpawner:playPickupAnimation(item, player)
+	local visual = item:FindFirstChild("ItemVisual")
+	if not visual or not player.Character then return end
+
+	local humanoidRootPart = player.Character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then return end
+
+	local targetPosition = humanoidRootPart.Position + Vector3.new(0, 3, 0)
+
+	local tween = TweenService:Create(visual,
+		TweenInfo.new(CONFIG.PICKUP_ANIMATION_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{
+			Position = targetPosition,
+			Size = Vector3.new(0.1, 0.1, 0.1),
+			Transparency = 1
+		}
+	)
+	tween:Play()
+	tween.Completed:Connect(function()
+		item:Destroy()
+	end)
+end
+
+function ItemSpawner:removeItemFromTracking(item)
+	for i = #self.spawnedItems, 1, -1 do
+		if self.spawnedItems[i].item == item then
+			table.remove(self.spawnedItems, i)
+			break
+		end
+	end
+end
+
+-- ======================================================================== 
+-- ROOM INTEGRATION
+-- ======================================================================== 
+
+function ItemSpawner:onTreasureRoomCreated(roomModel)
+	print("🏆 Treasure room created:", roomModel.Name)
+	task.wait(2) -- Wait for room setup
+
+	local floor = self:findRoomFloor(roomModel)
+	if not floor then
+		warn("❌ No floor found in treasure room")
+		return
+	end
+
+	-- Try to use ItemDatabase if available
+	local itemId = nil
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase then
+			itemId = ItemDatabase:GetRandomItemFromPool("TREASURE_ROOM")
+			if itemId then
+				local itemData = ItemDatabase:GetItem(itemId)
+				print("✨ Selected", itemData.rarity, "item:", itemData.name)
+			end
+		end
+	end
+
+	-- Fallback to first available item
+	if not itemId then
+		for id, _ in pairs(self.itemTemplates) do
+			itemId = id
+			break
+		end
+	end
+
+	if not itemId then
+		warn("❌ No items available for treasure room")
+		return
+	end
+
+	-- Calculate spawn position
+	local floorPosition = floor.Position
+	local spawnPosition = Vector3.new(
+		floorPosition.X,
+		floorPosition.Y + floor.Size.Y/2 + CONFIG.PEDESTAL_HEIGHT,
+		floorPosition.Z
+	)
+
+	self:spawnItemInRoom(roomModel, itemId, spawnPosition)
+end
+
+-- ======================================================================== 
+-- PUBLIC API
+-- ======================================================================== 
+
+function ItemSpawner:spawnSpecificItem(roomModel, itemId)
+	local floor = self:findRoomFloor(roomModel)
+	if not floor then return false end
+
+	local spawnPosition = Vector3.new(
+		floor.Position.X,
+		floor.Position.Y + floor.Size.Y/2 + CONFIG.PEDESTAL_HEIGHT,
+		floor.Position.Z
+	)
+
+	return self:spawnItemInRoom(roomModel, itemId, spawnPosition) ~= nil
+end
+
+function ItemSpawner:getSpawnedItemCount()
+	return #self.spawnedItems
+end
+
+function ItemSpawner:clearAllItems()
+	for _, itemData in pairs(self.spawnedItems) do
+		if itemData.item.Parent then
+			itemData.item:Destroy()
+		end
+	end
+	self.spawnedItems = {}
+	print("🧹 Cleared all spawned items")
+end
+
+-- ======================================================================== 
+-- INITIALIZATION
+-- ======================================================================== 
+
+local itemSpawner = ItemSpawner.new()
+
+-- Export globally
+_G.ItemSpawner = itemSpawner
+
+-- Connect to player events
+Players.PlayerAdded:Connect(function(player)
+	if _G.ItemEffects then
+		_G.ItemEffects:InitializePlayer(player)
+	end
+end)
+
+print("🎮 Fixed Item Spawning System loaded!")
+print("📋 Features:")
+print(" ✅ Folder-based template loading")
+print(" ✅ Rarity-based visual effects")
+print(" ✅ No duplicate function definitions")
+print(" ✅ Automatic workspace cleanup")
+print(" ✅ Fallback compatibility")
+print("")
+print("🔧 Debug Commands:")
+print(" _G.ItemSpawner:listTemplates()")
+print(" _G.ItemSpawner:spawnSpecificItem(roomModel, 'itemId')")
+print(" _G.ItemSpawner:clearAllItems()")
+
+return itemSpawner
