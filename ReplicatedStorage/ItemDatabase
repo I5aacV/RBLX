@@ -1,1 +1,643 @@
+-- ========================================================================
+-- ITEM DATABASE SYSTEM - Phase 1 Week 1 Day 1-2
+-- Place this as a ModuleScript in ReplicatedStorage named "ItemDatabase"
+-- ========================================================================
 
+local ItemDatabase = {}
+
+-- ========================================================================
+-- RARITY SYSTEM CONFIGURATION
+-- ========================================================================
+ItemDatabase.Rarities = {
+	COMMON = {
+		name = "Common",
+		color = Color3.fromRGB(200, 200, 200), -- Light gray
+		weight = 100, -- Higher weight = more common
+		glowColor = Color3.fromRGB(200, 200, 200),
+		particleColor = Color3.fromRGB(220, 220, 220),
+		description = "Basic items found frequently"
+	},
+	UNCOMMON = {
+		name = "Uncommon", 
+		color = Color3.fromRGB(100, 255, 100), -- Green
+		weight = 50,
+		glowColor = Color3.fromRGB(100, 255, 100),
+		particleColor = Color3.fromRGB(150, 255, 150),
+		description = "Useful items with moderate effects"
+	},
+	RARE = {
+		name = "Rare",
+		color = Color3.fromRGB(100, 100, 255), -- Blue
+		weight = 20,
+		glowColor = Color3.fromRGB(100, 100, 255),
+		particleColor = Color3.fromRGB(150, 150, 255),
+		description = "Powerful items with significant effects"
+	},
+	LEGENDARY = {
+		name = "Legendary",
+		color = Color3.fromRGB(255, 165, 0), -- Orange
+		weight = 5,
+		glowColor = Color3.fromRGB(255, 165, 0),
+		particleColor = Color3.fromRGB(255, 200, 100),
+		description = "Extremely powerful game-changing items"
+	},
+	BLESSED = {
+		name = "Blessed",
+		color = Color3.fromRGB(255, 215, 0), -- Gold
+		weight = 2,
+		glowColor = Color3.fromRGB(255, 215, 0),
+		particleColor = Color3.fromRGB(255, 235, 150),
+		description = "Divine items with holy power"
+	},
+	CURSED = {
+		name = "Cursed",
+		color = Color3.fromRGB(128, 0, 128), -- Purple
+		weight = 8, -- More common than blessed but less than legendary
+		glowColor = Color3.fromRGB(128, 0, 128),
+		particleColor = Color3.fromRGB(180, 50, 180),
+		description = "Dark items with power at a price"
+	}
+}
+
+-- ========================================================================
+-- ITEM CATEGORIES & EFFECT TYPES
+-- ========================================================================
+ItemDatabase.Categories = {
+	DAMAGE = "Damage",
+	TEARS = "Tears", 
+	SPEED = "Speed",
+	HEALTH = "Health",
+	SPECIAL = "Special",
+	ACTIVE = "Active",
+	TRINKET = "Trinket"
+}
+
+ItemDatabase.EffectTypes = {
+	-- Stat Modifiers
+	DAMAGE_MULTIPLIER = "DamageMultiplier",
+	DAMAGE_FLAT = "DamageFlat",
+	FIRE_RATE = "FireRate",
+	SHOT_SPEED = "ShotSpeed",
+	RANGE = "Range",
+	SPEED = "Speed",
+	LUCK = "Luck",
+
+	-- Health Effects
+	HEALTH_UP = "HealthUp",
+	HEAL = "Heal",
+	HEALTH_DOWN = "HealthDown",
+
+	-- Special Effects
+	FLIGHT = "Flight",
+	SPECTRAL_TEARS = "SpectralTears",
+	PIERCING = "Piercing",
+	HOMING = "Homing",
+	EXPLOSIVE = "Explosive",
+
+	-- Active Effects
+	ROOM_CLEAR = "RoomClear",
+	TELEPORT = "Teleport",
+	REROLL = "Reroll",
+
+	-- Cursed Effects (negative)
+	CURSE_BLIND = "CurseBlind",
+	CURSE_DARKNESS = "CurseDarkness",
+	CURSE_LOST = "CurseLost"
+}
+
+-- ========================================================================
+-- ITEM DATABASE
+-- ========================================================================
+ItemDatabase.Items = {
+
+	-- ===================
+	-- COMMON ITEMS (Basic stat boosts)
+	-- ===================
+	["sad_onion"] = {
+		name = "Sad Onion",
+		description = "Tears up! +0.7 fire rate",
+		rarity = "COMMON",
+		category = "TEARS",
+		effects = {
+			{type = "FIRE_RATE", value = 0.7}
+		},
+		quote = "Onions make you cry faster",
+		unlocked = true,
+		synergies = {"inner_eye", "mutant_spider"}
+	},
+
+	["breakfast"] = {
+		name = "Breakfast",
+		description = "Health up! +1 health",
+		rarity = "COMMON", 
+		category = "HEALTH",
+		effects = {
+			{type = "HEALTH_UP", value = 2} -- 2 hits = 1 full heart
+		},
+		quote = "Most important meal of the day",
+		unlocked = true,
+		synergies = {}
+	},
+
+	["speed_ball"] = {
+		name = "Speed Ball",
+		description = "Speed up! +0.3 speed",
+		rarity = "COMMON",
+		category = "SPEED", 
+		effects = {
+			{type = "SPEED", value = 0.3}
+		},
+		quote = "Gotta go fast!",
+		unlocked = true,
+		synergies = {"the_belt"}
+	},
+
+	["small_rock"] = {
+		name = "Small Rock",
+		description = "Damage up! +1 damage",
+		rarity = "COMMON",
+		category = "DAMAGE",
+		effects = {
+			{type = "DAMAGE_FLAT", value = 1}
+		},
+		quote = "It's a rock.",
+		unlocked = true,
+		synergies = {"rock_bottom"}
+	},
+
+	-- ===================
+	-- UNCOMMON ITEMS (Moderate effects)
+	-- ===================
+	["magic_mushroom"] = {
+		name = "Magic Mushroom",
+		description = "All stats up! Damage +1, speed +0.3, health +1",
+		rarity = "UNCOMMON",
+		category = "SPECIAL",
+		effects = {
+			{type = "DAMAGE_FLAT", value = 1},
+			{type = "SPEED", value = 0.3},
+			{type = "HEALTH_UP", value = 2}
+		},
+		quote = "One makes you larger...",
+		unlocked = true,
+		synergies = {}
+	},
+
+	["lunch"] = {
+		name = "Lunch", 
+		description = "Health up! +1 health",
+		rarity = "UNCOMMON",
+		category = "HEALTH",
+		effects = {
+			{type = "HEALTH_UP", value = 2}
+		},
+		quote = "HP up!",
+		unlocked = true,
+		synergies = {"breakfast", "dinner"}
+	},
+
+	["wire_coat_hanger"] = {
+		name = "Wire Coat Hanger",
+		description = "Tears up! +0.7 fire rate",
+		rarity = "UNCOMMON",
+		category = "TEARS",
+		effects = {
+			{type = "FIRE_RATE", value = 0.7}
+		},
+		quote = "Abort yourself!",
+		unlocked = true,
+		synergies = {}
+	},
+
+	-- ===================
+	-- RARE ITEMS (Significant effects)
+	-- ===================
+	["inner_eye"] = {
+		name = "The Inner Eye", 
+		description = "Triple shot! -51% fire rate",
+		rarity = "RARE",
+		category = "TEARS",
+		effects = {
+			{type = "FIRE_RATE", value = -0.51},
+			{type = "TRIPLE_SHOT", value = true}
+		},
+		quote = "Triple shot!",
+		unlocked = true,
+		synergies = {"mutant_spider", "20_20"}
+	},
+
+	["mutant_spider"] = {
+		name = "Mutant Spider",
+		description = "Quad shot! -51.5% fire rate", 
+		rarity = "RARE",
+		category = "TEARS",
+		effects = {
+			{type = "FIRE_RATE", value = -0.515},
+			{type = "QUAD_SHOT", value = true}
+		},
+		quote = "Quad shot!",
+		unlocked = true,
+		synergies = {"inner_eye", "20_20"}
+	},
+
+	["technology"] = {
+		name = "Technology",
+		description = "Laser tears! Damage x2, piercing",
+		rarity = "RARE",
+		category = "TEARS",
+		effects = {
+			{type = "DAMAGE_MULTIPLIER", value = 2.0},
+			{type = "PIERCING", value = true},
+			{type = "LASER_TEARS", value = true}
+		},
+		quote = "Laser tears!",
+		unlocked = true,
+		synergies = {"technology_2", "tech_x"}
+	},
+
+	-- ===================
+	-- LEGENDARY ITEMS (Game-changing)
+	-- ===================
+	["mom_knife"] = {
+		name = "Mom's Knife",
+		description = "Replaces tears with a knife! Damage x2",
+		rarity = "LEGENDARY",
+		category = "TEARS",
+		effects = {
+			{type = "DAMAGE_MULTIPLIER", value = 2.0},
+			{type = "KNIFE_TEARS", value = true},
+			{type = "PIERCING", value = true}
+		},
+		quote = "Stab stab stab!",
+		unlocked = true,
+		synergies = {}
+	},
+
+	["brimstone"] = {
+		name = "Brimstone",
+		description = "Laser beam! Charge to fire, damage x2",
+		rarity = "LEGENDARY", 
+		category = "TEARS",
+		effects = {
+			{type = "DAMAGE_MULTIPLIER", value = 2.0},
+			{type = "BRIMSTONE", value = true},
+			{type = "PIERCING", value = true}
+		},
+		quote = "Your enemies will burn!",
+		unlocked = true,
+		synergies = {"tammy_head", "chocolate_milk"}
+	},
+
+	["sacred_heart"] = {
+		name = "Sacred Heart",
+		description = "Homing tears! Damage x2.3, +1 health",
+		rarity = "LEGENDARY",
+		category = "TEARS",
+		effects = {
+			{type = "DAMAGE_MULTIPLIER", value = 2.3},
+			{type = "HOMING", value = true},
+			{type = "HEALTH_UP", value = 2},
+			{type = "FIRE_RATE", value = -0.4}
+		},
+		quote = "Blessed tears",
+		unlocked = false, -- Must be unlocked
+		synergies = {}
+	},
+
+	-- ===================
+	-- BLESSED ITEMS (Divine power)
+	-- ===================
+	["godhead"] = {
+		name = "Godhead",
+		description = "God tears! Damage x2, homing, creates aura",
+		rarity = "BLESSED",
+		category = "TEARS", 
+		effects = {
+			{type = "DAMAGE_MULTIPLIER", value = 2.0},
+			{type = "HOMING", value = true},
+			{type = "GODHEAD_AURA", value = true},
+			{type = "FIRE_RATE", value = -0.3}
+		},
+		quote = "I AM become death",
+		unlocked = false,
+		synergies = {}
+	},
+
+	["the_soul"] = {
+		name = "The Soul",
+		description = "Soul hearts only! Spectral tears, flight",
+		rarity = "BLESSED",
+		category = "HEALTH",
+		effects = {
+			{type = "SPECTRAL_TEARS", value = true},
+			{type = "FLIGHT", value = true},
+			{type = "SOUL_HEART_ONLY", value = true}
+		},
+		quote = "Transcendence",
+		unlocked = false,
+		synergies = {}
+	},
+
+	-- ===================
+	-- CURSED ITEMS (Power at a price)
+	-- ===================
+	["dead_cat"] = {
+		name = "Dead Cat",
+		description = "9 lives! Set health to 1 heart",
+		rarity = "CURSED",
+		category = "HEALTH",
+		effects = {
+			{type = "EXTRA_LIVES", value = 8}, -- 9 total (including current)
+			{type = "HEALTH_DOWN", value = -4} -- Set to 1 heart (2 hits)
+		},
+		quote = "9 lives",
+		unlocked = true,
+		synergies = {"guppy_tail", "guppy_head"}
+	},
+
+	["cursed_eye"] = {
+		name = "Cursed Eye",
+		description = "Charge shot! Teleports you on hit",
+		rarity = "CURSED",
+		category = "TEARS",
+		effects = {
+			{type = "CHARGE_SHOT", value = true},
+			{type = "CURSE_TELEPORT", value = true},
+			{type = "DAMAGE_MULTIPLIER", value = 1.5}
+		},
+		quote = "Cursed charge shot",
+		unlocked = true,
+		synergies = {}
+	},
+
+	["bob_brain"] = {
+		name = "Bob's Brain",
+		description = "Spawns explosive brain! Can hurt you",
+		rarity = "CURSED",
+		category = "SPECIAL",
+		effects = {
+			{type = "BOB_BRAIN", value = true},
+			{type = "SELF_DAMAGE_RISK", value = true}
+		},
+		quote = "Explosive thoughts",
+		unlocked = true,
+		synergies = {"pyromaniac", "ipecac"}
+	},
+
+	-- ===================
+	-- ACTIVE ITEMS
+	-- ===================
+	["d6"] = {
+		name = "The D6",
+		description = "Reroll all items in the room",
+		rarity = "RARE",
+		category = "ACTIVE",
+		effects = {
+			{type = "REROLL", value = "ROOM_ITEMS"}
+		},
+		quote = "Reroll!",
+		unlocked = true,
+		cooldown = 6, -- Room charges
+		synergies = {}
+	},
+
+	["book_of_belial"] = {
+		name = "Book of Belial", 
+		description = "Damage +2 for current room",
+		rarity = "UNCOMMON",
+		category = "ACTIVE",
+		effects = {
+			{type = "DAMAGE_FLAT", value = 2, duration = "ROOM"}
+		},
+		quote = "Temporary demon power",
+		unlocked = true,
+		cooldown = 3,
+		synergies = {}
+	}
+}
+
+-- ========================================================================
+-- ITEM POOLS (Different pools for different room types)
+-- ========================================================================
+ItemDatabase.ItemPools = {
+	BOSS_ROOM = {
+		-- Legendary boss rewards (high chance)
+		"mom_knife", "brimstone", "sacred_heart", "technology",
+		"inner_eye", "mutant_spider",
+
+		-- Rare boss rewards (medium chance) 
+		"magic_mushroom", "wire_coat_hanger",
+
+		-- Active items (boss room exclusive)
+		"d6", "book_of_belial",
+
+		-- Blessed items (very rare)
+		"godhead", "the_soul",
+
+		-- Cursed powerhouse items (high risk, high reward)
+		"dead_cat", "cursed_eye"
+	},
+
+	-- NEW: Specific boss pools for variety
+	MONSTRO_POOL = {
+		"mom_knife", "brimstone", "sacred_heart", "technology"
+	},
+
+	LARRY_POOL = {
+		"inner_eye", "mutant_spider", "magic_mushroom"
+	},
+
+	TREASURE_ROOM = {
+		"sad_onion", "breakfast", "speed_ball", "small_rock", "magic_mushroom", 
+		"lunch", "wire_coat_hanger", "inner_eye", "mutant_spider", "technology",
+		"mom_knife", "brimstone", "sacred_heart", "dead_cat"
+	},
+
+	SHOP = {
+		"breakfast", "lunch", "speed_ball", "small_rock", "wire_coat_hanger",
+		"book_of_belial"
+	},
+
+	BOSS_ROOM = {
+		"magic_mushroom", "inner_eye", "mutant_spider", "technology", 
+		"mom_knife", "brimstone", "sacred_heart", "godhead"
+	},
+
+	SECRET_ROOM = {
+		"godhead", "the_soul", "dead_cat", "cursed_eye", "bob_brain"
+	},
+
+	CURSE_ROOM = {
+		"dead_cat", "cursed_eye", "bob_brain", "brimstone", "mom_knife"
+	}
+}
+
+-- ========================================================================
+-- HELPER FUNCTIONS
+-- ========================================================================
+
+-- Get item data by ID
+function ItemDatabase:GetItem(itemId)
+	return self.Items[itemId]
+end
+
+-- Get all items of a specific rarity
+function ItemDatabase:GetItemsByRarity(rarity)
+	local items = {}
+	for id, item in pairs(self.Items) do
+		if item.rarity == rarity then
+			table.insert(items, {id = id, data = item})
+		end
+	end
+	return items
+end
+
+-- Get all items of a specific category
+function ItemDatabase:GetItemsByCategory(category)
+	local items = {}
+	for id, item in pairs(self.Items) do
+		if item.category == category then
+			table.insert(items, {id = id, data = item})
+		end
+	end
+	return items
+end
+
+-- Select random item from pool with rarity weights
+function ItemDatabase:GetRandomItemFromPool(poolName, excludeItems)
+	excludeItems = excludeItems or {}
+	local pool = self.ItemPools[poolName] or self.ItemPools.TREASURE_ROOM
+
+	-- Filter out excluded items and unlocked items
+	local availableItems = {}
+	for _, itemId in pairs(pool) do
+		local item = self.Items[itemId]
+		if item and item.unlocked and not excludeItems[itemId] then
+			table.insert(availableItems, itemId)
+		end
+	end
+
+	if #availableItems == 0 then
+		return nil
+	end
+
+	-- Apply rarity weights
+	local weightedItems = {}
+	for _, itemId in pairs(availableItems) do
+		local item = self.Items[itemId]
+		local rarity = self.Rarities[item.rarity]
+		local weight = rarity and rarity.weight or 1
+
+		-- Add item multiple times based on weight
+		for i = 1, weight do
+			table.insert(weightedItems, itemId)
+		end
+	end
+
+	-- Select random item
+	if #weightedItems > 0 then
+		return weightedItems[math.random(1, #weightedItems)]
+	end
+
+	return nil
+end
+
+-- Get rarity info
+function ItemDatabase:GetRarityInfo(rarityName)
+	return self.Rarities[rarityName]
+end
+
+-- Check if item has specific effect type
+function ItemDatabase:HasEffect(itemId, effectType)
+	local item = self:GetItem(itemId)
+	if not item or not item.effects then return false end
+
+	for _, effect in pairs(item.effects) do
+		if effect.type == effectType then
+			return true, effect.value
+		end
+	end
+	return false
+end
+
+-- Get all synergies for an item
+function ItemDatabase:GetSynergies(itemId)
+	local item = self:GetItem(itemId)
+	return item and item.synergies or {}
+end
+
+-- Check if two items have synergy
+function ItemDatabase:CheckSynergy(itemId1, itemId2)
+	local synergies1 = self:GetSynergies(itemId1)
+	local synergies2 = self:GetSynergies(itemId2)
+
+	-- Check if either item lists the other as a synergy
+	for _, synergyId in pairs(synergies1) do
+		if synergyId == itemId2 then
+			return true
+		end
+	end
+
+	for _, synergyId in pairs(synergies2) do
+		if synergyId == itemId1 then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Get total stat modifications from a list of items
+function ItemDatabase:CalculateStats(itemIds)
+	local stats = {
+		damageFlat = 0,
+		damageMultiplier = 1,
+		fireRate = 0,
+		shotSpeed = 0,
+		range = 0,
+		speed = 0,
+		luck = 0,
+		healthUp = 0
+	}
+
+	for _, itemId in pairs(itemIds) do
+		local item = self:GetItem(itemId)
+		if item and item.effects then
+			for _, effect in pairs(item.effects) do
+				if effect.type == "DAMAGE_FLAT" then
+					stats.damageFlat = stats.damageFlat + effect.value
+				elseif effect.type == "DAMAGE_MULTIPLIER" then
+					stats.damageMultiplier = stats.damageMultiplier * effect.value
+				elseif effect.type == "FIRE_RATE" then
+					stats.fireRate = stats.fireRate + effect.value
+				elseif effect.type == "SHOT_SPEED" then
+					stats.shotSpeed = stats.shotSpeed + effect.value
+				elseif effect.type == "RANGE" then
+					stats.range = stats.range + effect.value
+				elseif effect.type == "SPEED" then
+					stats.speed = stats.speed + effect.value
+				elseif effect.type == "LUCK" then
+					stats.luck = stats.luck + effect.value
+				elseif effect.type == "HEALTH_UP" then
+					stats.healthUp = stats.healthUp + effect.value
+				end
+			end
+		end
+	end
+
+	return stats
+end
+
+-- Debug function to print all items
+function ItemDatabase:PrintAllItems()
+	print("=== ITEM DATABASE ===")
+	for rarity, _ in pairs(self.Rarities) do
+		print("\n" .. rarity .. " ITEMS:")
+		local items = self:GetItemsByRarity(rarity)
+		for _, itemData in pairs(items) do
+			print("  " .. itemData.data.name .. " - " .. itemData.data.description)
+		end
+	end
+end
+
+return ItemDatabase
