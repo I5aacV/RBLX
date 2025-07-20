@@ -1,0 +1,724 @@
+-- ========================================================================
+-- ITEM EFFECTS MANAGER - Phase 1 Week 1 Day 3-4
+-- Place this as a ModuleScript in ReplicatedStorage named "ItemEffects"
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ItemEffects = {}
+
+-- Reference to ItemDatabase (will be required)
+local ItemDatabase = require(script.Parent.ItemDatabase)
+
+-- ========================================================================
+-- PLAYER DATA STORAGE
+-- ========================================================================
+
+-- Store each player's current items and stats
+ItemEffects.PlayerData = {}
+
+-- Default player stats
+local DEFAULT_STATS = {
+	-- Combat Stats
+	baseDamage = 10,
+	damageFlat = 0,
+	damageMultiplier = 1,
+	fireRate = 0,
+	shotSpeed = 0,
+	range = 0,
+
+	-- Character Stats  
+	speed = 16, -- Roblox WalkSpeed
+	luck = 0,
+
+	-- Health Stats
+	maxHearts = 3, -- Starting hearts
+	currentHearts = 6, -- 2 hits per heart
+	soulHearts = 0,
+	blackHearts = 0,
+
+	-- Special Abilities
+	canFly = false,
+	hasSpectralTears = false,
+	hasPiercingTears = false,
+	hasHomingTears = false,
+	hasExplosiveTears = false,
+
+	-- Active Items
+	activeItem = nil,
+	activeItemCharges = 0,
+	activeItemMaxCharges = 6,
+
+	-- Special Effects
+	extraLives = 0,
+	transformations = {},
+
+	-- Cursed Effects
+	isCursed = false,
+	curses = {}
+}
+
+-- ========================================================================
+-- PLAYER DATA MANAGEMENT
+-- ========================================================================
+
+-- Initialize player data
+function ItemEffects:InitializePlayer(player)
+	local userId = player.UserId
+
+	-- Create player data with default stats
+	self.PlayerData[userId] = {
+		player = player,
+		items = {}, -- Array of item IDs
+		stats = {},
+		effects = {},
+		lastUpdate = tick()
+	}
+
+	-- Copy default stats
+	for key, value in pairs(DEFAULT_STATS) do
+		if type(value) == "table" then
+			self.PlayerData[userId].stats[key] = {}
+			for k, v in pairs(value) do
+				self.PlayerData[userId].stats[key][k] = v
+			end
+		else
+			self.PlayerData[userId].stats[key] = value
+		end
+	end
+
+	print("🎮 Initialized item system for player:", player.Name)
+	return self.PlayerData[userId]
+end
+
+-- Get player data
+function ItemEffects:GetPlayerData(player)
+	local userId = player.UserId
+	if not self.PlayerData[userId] then
+		return self:InitializePlayer(player)
+	end
+	return self.PlayerData[userId]
+end
+
+-- Clean up when player leaves
+function ItemEffects:CleanupPlayer(player)
+	local userId = player.UserId
+	self.PlayerData[userId] = nil
+	print("🧹 Cleaned up item data for player:", player.Name)
+end
+
+-- ========================================================================
+-- ITEM MANAGEMENT
+-- ========================================================================
+
+-- Add item to player
+function ItemEffects:AddItem(player, itemId)
+	local playerData = self:GetPlayerData(player)
+	local item = ItemDatabase:GetItem(itemId)
+
+	if not item then
+		warn("❌ Item not found:", itemId)
+		return false
+	end
+
+	-- Add to player's items
+	table.insert(playerData.items, itemId)
+
+	-- Apply item effects
+	self:ApplyItemEffects(player, itemId)
+
+	-- Recalculate all stats
+	self:RecalculateStats(player)
+
+	-- Apply stats to character
+	self:ApplyStatsToCharacter(player)
+
+	print("✅ Added item to", player.Name .. ":", item.name)
+	return true
+end
+
+-- Remove item from player
+function ItemEffects:RemoveItem(player, itemId)
+	local playerData = self:GetPlayerData(player)
+
+	-- Find and remove item
+	for i = #playerData.items, 1, -1 do
+		if playerData.items[i] == itemId then
+			table.remove(playerData.items, i)
+			print("🗑️ Removed item from", player.Name .. ":", itemId)
+			break
+		end
+	end
+
+	-- Recalculate stats
+	self:RecalculateStats(player)
+	self:ApplyStatsToCharacter(player)
+end
+
+-- Get all player items
+function ItemEffects:GetPlayerItems(player)
+	local playerData = self:GetPlayerData(player)
+	return playerData.items
+end
+
+-- Check if player has item
+function ItemEffects:HasItem(player, itemId)
+	local items = self:GetPlayerItems(player)
+	for _, id in pairs(items) do
+		if id == itemId then
+			return true
+		end
+	end
+	return false
+end
+
+-- ========================================================================
+-- EFFECT APPLICATION
+-- ========================================================================
+
+-- Apply effects from a specific item
+function ItemEffects:ApplyItemEffects(player, itemId)
+	local item = ItemDatabase:GetItem(itemId)
+	if not item or not item.effects then return end
+
+	local playerData = self:GetPlayerData(player)
+
+	for _, effect in pairs(item.effects) do
+		self:ApplyEffect(player, effect, itemId)
+	end
+end
+
+-- Apply a single effect
+function ItemEffects:ApplyEffect(player, effect, sourceItemId)
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	-- Handle different effect types
+	if effect.type == "DAMAGE_FLAT" then
+		stats.damageFlat = stats.damageFlat + effect.value
+
+	elseif effect.type == "DAMAGE_MULTIPLIER" then
+		stats.damageMultiplier = stats.damageMultiplier * effect.value
+
+	elseif effect.type == "FIRE_RATE" then
+		stats.fireRate = stats.fireRate + effect.value
+
+	elseif effect.type == "SHOT_SPEED" then
+		stats.shotSpeed = stats.shotSpeed + effect.value
+
+	elseif effect.type == "RANGE" then
+		stats.range = stats.range + effect.value
+
+	elseif effect.type == "SPEED" then
+		stats.speed = stats.speed + effect.value
+
+	elseif effect.type == "LUCK" then
+		stats.luck = stats.luck + effect.value
+
+	elseif effect.type == "HEALTH_UP" then
+		stats.maxHearts = stats.maxHearts + math.floor(effect.value / 2) -- Convert hits to hearts
+		stats.currentHearts = stats.currentHearts + effect.value
+
+	elseif effect.type == "HEALTH_DOWN" then
+		stats.currentHearts = math.max(2, stats.currentHearts + effect.value) -- Minimum 1 heart
+
+	elseif effect.type == "HEAL" then
+		stats.currentHearts = math.min(stats.maxHearts * 2, stats.currentHearts + effect.value)
+
+		-- Special Abilities
+	elseif effect.type == "FLIGHT" then
+		stats.canFly = true
+
+	elseif effect.type == "SPECTRAL_TEARS" then
+		stats.hasSpectralTears = true
+
+	elseif effect.type == "PIERCING" then
+		stats.hasPiercingTears = true
+
+	elseif effect.type == "HOMING" then
+		stats.hasHomingTears = true
+
+	elseif effect.type == "EXPLOSIVE" then
+		stats.hasExplosiveTears = true
+
+		-- Special Effects
+	elseif effect.type == "EXTRA_LIVES" then
+		stats.extraLives = stats.extraLives + effect.value
+
+		-- Active Item Effects (handled separately)
+	elseif effect.type == "REROLL" then
+		-- Handle when active item is used
+
+		-- Custom tear types (will be handled by shooting system)
+	elseif effect.type == "TRIPLE_SHOT" then
+		stats.tripleShot = true
+
+	elseif effect.type == "QUAD_SHOT" then
+		stats.quadShot = true
+
+	elseif effect.type == "LASER_TEARS" then
+		stats.laserTears = true
+
+	elseif effect.type == "KNIFE_TEARS" then
+		stats.knifeTears = true
+
+	elseif effect.type == "BRIMSTONE" then
+		stats.brimstone = true
+
+	elseif effect.type == "CHARGE_SHOT" then
+		stats.chargeShot = true
+
+		-- Cursed Effects
+	elseif effect.type == "CURSE_TELEPORT" then
+		stats.curseTeleport = true
+
+	elseif effect.type == "CURSE_BLIND" then
+		table.insert(stats.curses, "BLIND")
+		stats.isCursed = true
+
+	elseif effect.type == "CURSE_DARKNESS" then
+		table.insert(stats.curses, "DARKNESS")
+		stats.isCursed = true
+
+		-- Handle unknown effects
+	else
+		warn("⚠️ Unknown effect type:", effect.type)
+	end
+
+	print("✨ Applied effect:", effect.type, "value:", effect.value, "from:", sourceItemId)
+end
+
+-- ========================================================================
+-- STAT CALCULATION
+-- ========================================================================
+
+-- Recalculate all stats from items
+function ItemEffects:RecalculateStats(player)
+	local playerData = self:GetPlayerData(player)
+
+	-- Reset stats to defaults
+	for key, value in pairs(DEFAULT_STATS) do
+		if type(value) == "table" then
+			playerData.stats[key] = {}
+			for k, v in pairs(value) do
+				playerData.stats[key][k] = v
+			end
+		else
+			playerData.stats[key] = value
+		end
+	end
+
+	-- Apply all item effects
+	for _, itemId in pairs(playerData.items) do
+		self:ApplyItemEffects(player, itemId)
+	end
+
+	-- Apply synergy bonuses
+	self:ApplySynergies(player)
+
+	print("🔄 Recalculated stats for", player.Name)
+end
+
+-- Apply synergy bonuses
+function ItemEffects:ApplySynergies(player)
+	local playerData = self:GetPlayerData(player)
+	local items = playerData.items
+
+	-- Check all item pairs for synergies
+	for i = 1, #items do
+		for j = i + 1, #items do
+			local item1 = items[i]
+			local item2 = items[j]
+
+			if ItemDatabase:CheckSynergy(item1, item2) then
+				self:ApplySynergyBonus(player, item1, item2)
+			end
+		end
+	end
+end
+
+-- Apply specific synergy bonus
+function ItemEffects:ApplySynergyBonus(player, itemId1, itemId2)
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	-- Define synergy combinations
+	local synergies = {
+		-- Inner Eye + Mutant Spider = 12 shot spread
+		["inner_eye,mutant_spider"] = function()
+			stats.megaShot = true
+			stats.tripleShot = false
+			stats.quadShot = false
+			print("🌟 SYNERGY: Inner Eye + Mutant Spider = Mega Shot!")
+		end,
+
+		-- Technology items stack
+		["technology,technology_2"] = function()
+			stats.damageMultiplier = stats.damageMultiplier * 1.5
+			print("🌟 SYNERGY: Technology + Technology 2 = Extra damage!")
+		end,
+
+		-- Breakfast + Lunch + Dinner = Full meal
+		["breakfast,lunch"] = function()
+			stats.speed = stats.speed + 0.1
+			print("🌟 SYNERGY: Breakfast + Lunch = Speed bonus!")
+		end,
+
+		-- Guppy transformation (3 guppy items)
+		["dead_cat,guppy_tail,guppy_head"] = function()
+			stats.canFly = true
+			stats.spawnsFlies = true
+			table.insert(stats.transformations, "GUPPY")
+			print("🌟 TRANSFORMATION: GUPPY! Flight and fly spawning!")
+		end
+	}
+
+	-- Create synergy key (sorted for consistency)
+	local synergyKey = itemId1 < itemId2 and (itemId1 .. "," .. itemId2) or (itemId2 .. "," .. itemId1)
+
+	-- Apply synergy if it exists
+	if synergies[synergyKey] then
+		synergies[synergyKey]()
+	end
+end
+
+-- ========================================================================
+-- CHARACTER INTEGRATION
+-- ========================================================================
+
+-- Apply calculated stats to player's character
+function ItemEffects:ApplyStatsToCharacter(player)
+	if not player.Character then return end
+
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	-- Apply speed to character
+	local humanoid = player.Character:FindFirstChild("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = math.max(0, stats.speed)
+	end
+
+	-- Apply health changes to heart system
+	if _G.HeartSystem and player == game.Players.LocalPlayer then
+		-- Update max hearts if changed
+		if _G.HeartSystem.maxHearts ~= stats.maxHearts then
+			_G.HeartSystem.maxHearts = stats.maxHearts
+			_G.HeartSystem:setHits(stats.currentHearts)
+		end
+	end
+
+	-- Apply flight ability
+	if stats.canFly then
+		self:EnableFlight(player)
+	end
+
+	-- Update shooting system with new stats
+	if _G.ShootingSystem and player == game.Players.LocalPlayer then
+		self:UpdateShootingSystem(player, stats)
+	end
+
+	print("⚡ Applied stats to character for", player.Name)
+end
+
+-- Enable flight for player
+function ItemEffects:EnableFlight(player)
+	if not player.Character or not player.Character:FindFirstChild("Humanoid") then return end
+
+	local humanoid = player.Character.Humanoid
+	local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+
+	if rootPart then
+		-- Create BodyVelocity for flight
+		local bodyVelocity = rootPart:FindFirstChild("FlightBodyVelocity")
+		if not bodyVelocity then
+			bodyVelocity = Instance.new("BodyVelocity")
+			bodyVelocity.Name = "FlightBodyVelocity"
+			bodyVelocity.MaxForce = Vector3.new(0, math.huge, 0)
+			bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+			bodyVelocity.Parent = rootPart
+		end
+
+		print("✈️ Enabled flight for", player.Name)
+	end
+end
+
+-- Update shooting system with new stats
+function ItemEffects:UpdateShootingSystem(player, stats)
+	if not _G.ShootingSystem then return end
+
+	-- Get current attack config
+	local currentConfig = _G.ShootingSystem:getAttackConfig()
+	if not currentConfig then return end
+
+	-- Calculate modified stats
+	local modifiedConfig = {}
+	for key, value in pairs(currentConfig) do
+		modifiedConfig[key] = value
+	end
+
+	-- Apply damage modifications
+	local finalDamage = (currentConfig.damage + stats.damageFlat) * stats.damageMultiplier
+	modifiedConfig.damage = math.max(1, finalDamage)
+
+	-- Apply fire rate modifications (lower = faster)
+	local baseFireRate = 0.25 -- Default from shooting system
+	local fireRateMultiplier = 1 / (1 + stats.fireRate)
+	modifiedConfig.fireRate = math.max(0.05, baseFireRate * fireRateMultiplier)
+
+	-- Apply shot speed modifications
+	modifiedConfig.speed = math.max(10, currentConfig.speed + (stats.shotSpeed * 5))
+
+	-- Apply range modifications (through lifetime)
+	local baseLifetime = 2.0
+	modifiedConfig.lifetime = math.max(0.5, baseLifetime + (stats.range * 0.2))
+
+	-- Apply special tear effects
+	if stats.hasPiercingTears then
+		modifiedConfig.piercing = true
+	end
+
+	if stats.hasHomingTears then
+		modifiedConfig.homing = true
+	end
+
+	if stats.hasExplosiveTears then
+		modifiedConfig.explosive = true
+	end
+
+	if stats.hasSpectralTears then
+		modifiedConfig.spectral = true
+	end
+
+	-- Apply special shot types
+	if stats.tripleShot then
+		modifiedConfig.shotPattern = "TRIPLE"
+	elseif stats.quadShot then
+		modifiedConfig.shotPattern = "QUAD"
+	elseif stats.megaShot then
+		modifiedConfig.shotPattern = "MEGA"
+	end
+
+	if stats.laserTears then
+		modifiedConfig.tearType = "LASER"
+	elseif stats.knifeTears then
+		modifiedConfig.tearType = "KNIFE"
+	elseif stats.brimstone then
+		modifiedConfig.tearType = "BRIMSTONE"
+	end
+
+	-- Store modified config (shooting system will need to read this)
+	_G.ShootingSystem.modifiedConfig = modifiedConfig
+
+	print("🎯 Updated shooting system for", player.Name)
+	print("  💥 Damage:", modifiedConfig.damage)
+	print("  ⚡ Fire Rate:", string.format("%.2f", modifiedConfig.fireRate))
+	print("  🏃 Shot Speed:", modifiedConfig.speed)
+	print("  📏 Range:", modifiedConfig.lifetime)
+end
+
+-- ========================================================================
+-- ACTIVE ITEM SYSTEM
+-- ========================================================================
+
+-- Set player's active item
+function ItemEffects:SetActiveItem(player, itemId)
+	local playerData = self:GetPlayerData(player)
+	local item = ItemDatabase:GetItem(itemId)
+
+	if not item or item.category ~= "ACTIVE" then
+		warn("❌ Invalid active item:", itemId)
+		return false
+	end
+
+	playerData.stats.activeItem = itemId
+	playerData.stats.activeItemCharges = 0
+	playerData.stats.activeItemMaxCharges = item.cooldown or 6
+
+	print("🔋 Set active item for", player.Name .. ":", item.name)
+	return true
+end
+
+-- Use active item
+function ItemEffects:UseActiveItem(player)
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	if not stats.activeItem then
+		print("❌ No active item equipped")
+		return false
+	end
+
+	if stats.activeItemCharges < stats.activeItemMaxCharges then
+		print("❌ Active item not charged:", stats.activeItemCharges .. "/" .. stats.activeItemMaxCharges)
+		return false
+	end
+
+	local item = ItemDatabase:GetItem(stats.activeItem)
+	if not item then return false end
+
+	-- Execute active item effects
+	for _, effect in pairs(item.effects or {}) do
+		self:ExecuteActiveEffect(player, effect)
+	end
+
+	-- Reset charges
+	stats.activeItemCharges = 0
+
+	print("⚡ Used active item:", item.name)
+	return true
+end
+
+-- Add charge to active item
+function ItemEffects:AddActiveItemCharge(player, charges)
+	charges = charges or 1
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	if stats.activeItem then
+		stats.activeItemCharges = math.min(stats.activeItemMaxCharges, stats.activeItemCharges + charges)
+		print("🔋 Active item charge:", stats.activeItemCharges .. "/" .. stats.activeItemMaxCharges)
+	end
+end
+
+-- Execute active item effect
+function ItemEffects:ExecuteActiveEffect(player, effect)
+	if effect.type == "REROLL" then
+		-- Reroll all items in current room
+		self:RerollRoomItems(player)
+
+	elseif effect.type == "DAMAGE_FLAT" and effect.duration == "ROOM" then
+		-- Temporary damage boost for current room
+		self:AddTemporaryEffect(player, "DAMAGE_FLAT", effect.value, "ROOM")
+
+	elseif effect.type == "TELEPORT" then
+		-- Teleport to random room
+		self:TeleportPlayer(player)
+
+	elseif effect.type == "ROOM_CLEAR" then
+		-- Clear all enemies in room
+		self:ClearCurrentRoom(player)
+	end
+end
+
+-- Add temporary effect
+function ItemEffects:AddTemporaryEffect(player, effectType, value, duration)
+	local playerData = self:GetPlayerData(player)
+
+	-- Store temporary effect
+	table.insert(playerData.effects, {
+		type = effectType,
+		value = value,
+		duration = duration,
+		startTime = tick()
+	})
+
+	-- Apply effect immediately
+	self:ApplyEffect(player, {type = effectType, value = value}, "TEMPORARY")
+	self:ApplyStatsToCharacter(player)
+
+	print("⏰ Added temporary effect:", effectType, "value:", value, "duration:", duration)
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+-- Get player's calculated damage
+function ItemEffects:GetPlayerDamage(player)
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+	return (stats.baseDamage + stats.damageFlat) * stats.damageMultiplier
+end
+
+-- Get player's current stats summary
+function ItemEffects:GetStatsInfo(player)
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	return {
+		damage = self:GetPlayerDamage(player),
+		fireRate = stats.fireRate,
+		speed = stats.speed,
+		health = stats.currentHearts .. "/" .. (stats.maxHearts * 2),
+		items = #playerData.items,
+		activeItem = stats.activeItem,
+		transformations = stats.transformations,
+		curses = stats.curses
+	}
+end
+
+-- Print player stats for debugging
+function ItemEffects:PrintPlayerStats(player)
+	local info = self:GetStatsInfo(player)
+	print("=== STATS FOR " .. player.Name .. " ===")
+	print("💥 Damage:", string.format("%.1f", info.damage))
+	print("⚡ Fire Rate:", info.fireRate > 0 and "+" .. info.fireRate or info.fireRate)
+	print("🏃 Speed:", info.speed)
+	print("💖 Health:", info.health)
+	print("🎒 Items:", info.items)
+	if info.activeItem then
+		local activeItem = ItemDatabase:GetItem(info.activeItem)
+		print("🔋 Active:", activeItem and activeItem.name or info.activeItem)
+	end
+	if #info.transformations > 0 then
+		print("🦋 Transformations:", table.concat(info.transformations, ", "))
+	end
+	if #info.curses > 0 then
+		print("💀 Curses:", table.concat(info.curses, ", "))
+	end
+end
+
+-- ========================================================================
+-- INTEGRATION FUNCTIONS (Called by other systems)
+-- ========================================================================
+
+-- Called when room is cleared (charges active items)
+function ItemEffects:OnRoomCleared(player)
+	self:AddActiveItemCharge(player, 1)
+end
+
+-- Called when enemy is killed (potential effects)
+function ItemEffects:OnEnemyKilled(player, enemy)
+	-- Some items have on-kill effects
+	local playerData = self:GetPlayerData(player)
+
+	-- Example: Lucky items might spawn pickups
+	if playerData.stats.luck > 0 then
+		local luckRoll = math.random(1, 100)
+		if luckRoll <= playerData.stats.luck * 2 then
+			-- Spawn lucky pickup
+			print("🍀 Luck activated! (not implemented yet)")
+		end
+	end
+end
+
+-- Called when player takes damage (some items trigger on damage)
+function ItemEffects:OnPlayerDamaged(player, damage)
+	local playerData = self:GetPlayerData(player)
+
+	-- Update current hearts
+	playerData.stats.currentHearts = math.max(0, playerData.stats.currentHearts - damage)
+
+	-- Check for extra lives
+	if playerData.stats.currentHearts <= 0 and playerData.stats.extraLives > 0 then
+		playerData.stats.extraLives = playerData.stats.extraLives - 1
+		playerData.stats.currentHearts = 2 -- Revive with 1 heart
+		print("💀➡️💖 Used extra life! Lives remaining:", playerData.stats.extraLives)
+		return true -- Prevented death
+	end
+
+	return false -- Normal damage
+end
+
+-- ========================================================================
+-- CLEANUP
+-- ========================================================================
+
+-- Clean up when players leave
+game.Players.PlayerRemoving:Connect(function(player)
+	ItemEffects:CleanupPlayer(player)
+end)
+
+return ItemEffects
