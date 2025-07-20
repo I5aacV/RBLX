@@ -1,5 +1,5 @@
 -- ========================================================================
--- ITEM SPAWNER LOADER - ServerScript
+-- ITEM SPAWNER LOADER - ServerScript (COMPLETE FIXED VERSION)
 -- Place this in ServerScriptService/Core/ItemSpawnerLoader
 -- ========================================================================
 
@@ -8,7 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- Wait for and load the ItemSpawner module
 local ItemSpawner = require(ReplicatedStorage.Modules.ItemSpawner)
 
--- Create global instance (ItemSpawner creates its own instance)
+-- Create global instance
 local itemSpawnerInstance = ItemSpawner.new()
 _G.ItemSpawner = itemSpawnerInstance
 
@@ -30,13 +30,125 @@ spawn(function()
 			if roomData.roomType == "Treasure" then
 				print("🏆 Treasure room cleared, spawning items...")
 				itemSpawnerInstance:onTreasureRoomCreated(roomData.model)
+			elseif roomData.roomType == "Boss" then
+				print("👑 Boss room cleared, checking for boss item...")
+				-- Spawn boss-specific items if we have the method
+				if itemSpawnerInstance.onBossRoomCleared then
+					itemSpawnerInstance:onBossRoomCleared(roomData.model)
+				else
+					-- Fallback: Use treasure room method for boss rooms
+					itemSpawnerInstance:onTreasureRoomCreated(roomData.model)
+				end
 			end
 		end)
+
+		-- Register callback for when player enters rooms
+		_G.RoomManager:onRoomEntered(function(roomData)
+			-- Auto-spawn items in treasure rooms when entered (if needed)
+			if roomData.roomType == "Treasure" then
+				-- Check if room already has items using fallback method
+				local existingItems = {}
+				if itemSpawnerInstance.getItemsInRoom then
+					existingItems = itemSpawnerInstance:getItemsInRoom(roomData.model)
+				else
+					-- Fallback: Check spawned items manually
+					for _, itemData in pairs(itemSpawnerInstance.spawnedItems) do
+						if itemData.room == roomData.model then
+							table.insert(existingItems, itemData.item)
+						end
+					end
+				end
+
+				if #existingItems == 0 and not _G.RoomManager:isRoomCleared(roomData) then
+					print("🏆 Entered empty treasure room, spawning item...")
+					itemSpawnerInstance:onTreasureRoomCreated(roomData.model)
+				end
+			end
+		end)
+
 		print("🔗 Connected ItemSpawner to RoomManager")
 	else
 		print("⚠️ RoomManager not found - manual item spawning only")
 	end
 end)
 
+-- ========================================================================
+-- INTEGRATION WITH ITEM EFFECTS SYSTEM
+-- ========================================================================
+
+-- Connect to ItemEffects when available
+spawn(function()
+	local attempts = 0
+	while not _G.ItemEffects and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.ItemEffects then
+		print("🔗 Connected ItemSpawner to ItemEffects system")
+		-- ItemSpawner already handles this in its pickup function
+	else
+		print("⚠️ ItemEffects not found - items may not have effects")
+	end
+end)
+
+-- ========================================================================
+-- DEBUG COMMANDS
+-- ========================================================================
+
+-- Global debug functions
+_G.ListItemTemplates = function()
+	itemSpawnerInstance:listTemplates()
+end
+
+_G.SpawnTestItem = function(roomName, itemId)
+	local roomModel = workspace:FindFirstChild(roomName)
+	if not roomModel then
+		print("❌ Room not found:", roomName)
+		return
+	end
+
+	local success = itemSpawnerInstance:spawnSpecificItem(roomModel, itemId or "sad_onion")
+	if success then
+		print("✅ Spawned test item in", roomName)
+	else
+		print("❌ Failed to spawn item in", roomName)
+	end
+end
+
+_G.ClearAllItems = function()
+	itemSpawnerInstance:clearAllItems()
+	print("🧹 Cleared all items")
+end
+
+_G.ItemSpawnerStatus = function()
+	print("📊 ITEM SPAWNER STATUS:")
+	print("📦 Templates loaded:", itemSpawnerInstance:getTemplateCount())
+	print("✨ Items spawned:", itemSpawnerInstance:getSpawnedItemCount())
+	if _G.RoomManager then
+		print("🏠 Connected to RoomManager: ✅")
+	else
+		print("🏠 Connected to RoomManager: ❌")
+	end
+	if _G.ItemEffects then
+		print("⚡ Connected to ItemEffects: ✅")
+	else
+		print("⚡ Connected to ItemEffects: ❌")
+	end
+end
+
+-- ========================================================================
+-- INITIALIZATION COMPLETE
+-- ========================================================================
+
 print("✅ ItemSpawner system loaded and available globally!")
 print("🎁 Item spawning ready for treasure rooms and manual spawning")
+print("🔗 Integrated with RoomManager for automatic spawning")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.ListItemTemplates() - Show available item types")
+print("  _G.SpawnTestItem('RoomName', 'ItemID') - Spawn test item")
+print("  _G.ClearAllItems() - Remove all spawned items")
+print("  _G.ItemSpawnerStatus() - Show system status")
+print("")
+print("🎯 ItemSpawner ready to spawn items on treasure room clear!")
