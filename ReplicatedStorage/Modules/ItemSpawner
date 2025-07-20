@@ -197,6 +197,7 @@ end
 -- ITEM SPAWNING
 -- ======================================================================== 
 
+-- ALSO ADD THIS: Enhanced spawnItemInRoom function with better positioning
 function ItemSpawner:spawnItemInRoom(roomModel, itemId, position)
 	local template = self.itemTemplates[itemId]
 	if not template then
@@ -204,11 +205,20 @@ function ItemSpawner:spawnItemInRoom(roomModel, itemId, position)
 		return nil
 	end
 
-	-- Clone and position item
+	print("📦 Spawning item:", itemId, "in room:", roomModel.Name, "at position:", position)
+
+	-- Clone and rename the item
 	local item = template:Clone()
 	item.Name = "Item_" .. itemId .. "_" .. tick()
+
+	-- IMPORTANT: Set parent BEFORE positioning
 	item.Parent = roomModel
+	print("  ✅ Item parented to room")
+
+	-- Position the item
 	self:positionItem(item, position)
+
+	-- Setup visual effects and interaction
 	self:setupItemVisuals(item, itemId)
 	self:setupItemInteraction(item, itemId)
 	self:playSpawnAnimation(item)
@@ -220,25 +230,78 @@ function ItemSpawner:spawnItemInRoom(roomModel, itemId, position)
 		room = roomModel
 	})
 
-	print("✨ Spawned item:", itemId, "at", position)
+	print("✨ Successfully spawned item:", itemId, "at:", position)
 	return item
 end
 
 function ItemSpawner:positionItem(item, position)
+	print("🔧 Positioning item:", item.Name, "to:", position)
+
+	-- Method 1: Try PrimaryPart (most reliable)
 	if item.PrimaryPart then
+		print("  Using PrimaryPart method")
 		item:SetPrimaryPartCFrame(CFrame.new(position))
-	else
-		-- Fallback positioning
-		local mainPart = item:FindFirstChild("ItemPedestal") or
-			item:FindFirstChildOfClass("BasePart")
-		if mainPart then
-			local offset = position - mainPart.Position
-			for _, part in pairs(item:GetDescendants()) do
-				if part:IsA("BasePart") then
-					part.Position = part.Position + offset
-				end
+		print("  ✅ PrimaryPart positioned")
+		return
+	end
+
+	-- Method 2: Try to find ItemVisual or main part
+	local mainPart = item:FindFirstChild("ItemVisual") or 
+		item:FindFirstChild("ItemPedestal") or
+		item:FindFirstChildOfClass("BasePart")
+
+	if mainPart then
+		print("  Using main part method:", mainPart.Name)
+
+		-- Calculate the offset needed
+		local currentPos = mainPart.Position
+		local offset = position - currentPos
+
+		print("  Current position:", currentPos)
+		print("  Target position:", position)
+		print("  Offset:", offset)
+
+		-- Move all parts in the item by the offset
+		for _, descendant in pairs(item:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Position = descendant.Position + offset
+				print("    Moved part:", descendant.Name, "to:", descendant.Position)
 			end
 		end
+
+		print("  ✅ Main part positioned")
+		return
+	end
+
+	-- Method 3: Fallback - move the entire model
+	print("  Using fallback method - moving entire model")
+
+	-- Find any part to use as reference
+	local anyPart = nil
+	for _, child in pairs(item:GetChildren()) do
+		if child:IsA("BasePart") then
+			anyPart = child
+			break
+		end
+	end
+
+	if anyPart then
+		local currentPos = anyPart.Position
+		local offset = position - currentPos
+
+		print("  Reference part:", anyPart.Name)
+		print("  Offset:", offset)
+
+		-- Move all parts
+		for _, descendant in pairs(item:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Position = descendant.Position + offset
+			end
+		end
+
+		print("  ✅ Fallback positioning complete")
+	else
+		warn("  ❌ No BaseParts found in item!")
 	end
 end
 
