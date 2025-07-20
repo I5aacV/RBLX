@@ -1,0 +1,409 @@
+-- ========================================================================
+-- ENEMY SPAWNER MODULE - Clean Spawning Logic Only
+-- ModuleScript in ReplicatedStorage/Modules/EnemySpawner
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local EnemySpawner = {}
+EnemySpawner.__index = EnemySpawner
+
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
+local CONFIG = {
+	-- Enemy patterns (Isaac-style)
+	PATTERNS = {
+		FLY_SWARM = {
+			name = "Fly Swarm",
+			enemies = {"Fly"},
+			minCount = 6, maxCount = 10,
+			weight = 30
+		},
+		SPIDER_NEST = {
+			name = "Spider Nest", 
+			enemies = {"Spider"},
+			minCount = 3, maxCount = 5,
+			weight = 25
+		},
+		GAPER_HORDE = {
+			name = "Gaper Horde",
+			enemies = {"Gaper"},
+			minCount = 4, maxCount = 7,
+			weight = 25
+		},
+		MIXED_CHAOS = {
+			name = "Mixed Chaos",
+			enemies = {"Fly", "Spider", "Gaper"},
+			minCount = 5, maxCount = 8,
+			weight = 10
+		}
+	},
+
+	-- Room type configurations
+	ROOM_CONFIGS = {
+		Normal = {usePatterns = true, spawnDelay = 0.2},
+		Boss = {usePatterns = false, enemies = {"Boss_Monstro"}, minCount = 1, maxCount = 1},
+		Treasure = {usePatterns = false, minCount = 0, maxCount = 0}, -- No enemies
+		Shop = {usePatterns = false, minCount = 0, maxCount = 0}, -- No enemies  
+		Spawn = {usePatterns = false, minCount = 0, maxCount = 0} -- No enemies
+	},
+
+	-- Grid configuration
+	GRID_CELL_SIZE_X = 120 / 13,
+	GRID_CELL_SIZE_Z = 80 / 9,
+	GRID_WIDTH = 13,
+	GRID_HEIGHT = 9
+}
+
+-- ========================================================================
+-- ENEMY SPAWNER CLASS
+-- ========================================================================
+
+function EnemySpawner.new()
+	local self = setmetatable({}, EnemySpawner)
+
+	self.enemyTemplates = {}
+	self.spawnedEnemies = {} -- Track for cleanup
+
+	self:loadEnemyTemplates()
+
+	print("👹 EnemySpawner module initialized")
+	return self
+end
+
+-- ========================================================================
+-- TEMPLATE MANAGEMENT
+-- ========================================================================
+
+function EnemySpawner:loadEnemyTemplates()
+	print("🔍 Loading enemy templates from organized folders...")
+
+	-- Method 1: Load from ReplicatedStorage/EnemyTemplates folder
+	local enemyTemplatesFolder = ReplicatedStorage:FindFirstChild("EnemyTemplates")
+	if enemyTemplatesFolder then
+		self:loadFromFolder(enemyTemplatesFolder)
+	else
+		warn("⚠️ EnemyTemplates folder not found in ReplicatedStorage!")
+		print("📁 Create: ReplicatedStorage/EnemyTemplates/Basic/")
+	end
+
+	-- Fallback: Load from workspace
+	if self:getTemplateCount() == 0 then
+		print("🔄 No templates in folder, checking workspace...")
+		self:loadFromWorkspace()
+	end
+
+	print("👹 Loaded", self:getTemplateCount(), "enemy templates total")
+
+	if self:getTemplateCount() == 0 then
+		warn("❌ NO ENEMY TEMPLATES FOUND!")
+		print("💡 Create EnemyTemplate_[name] models in ReplicatedStorage/EnemyTemplates/Basic/")
+	end
+end
+
+function EnemySpawner:loadFromFolder(parentFolder)
+	print("📁 Scanning enemy folder:", parentFolder.Name)
+
+	local function scanFolder(folder, depth)
+		depth = depth or 0
+		local indent = string.rep(" ", depth)
+
+		for _, child in pairs(folder:GetChildren()) do
+			if child:IsA("Model") and string.find(child.Name, "EnemyTemplate_") then
+				local enemyType = child.Name:gsub("EnemyTemplate_", "")
+				self.enemyTemplates[enemyType] = child
+				print(indent .. "✅ Loaded enemy:", enemyType, "from", folder.Name)
+			elseif child:IsA("Folder") then
+				print(indent .. "📂 Scanning subfolder:", child.Name)
+				scanFolder(child, depth + 1)
+			end
+		end
+	end
+
+	scanFolder(parentFolder)
+end
+
+function EnemySpawner:loadFromWorkspace()
+	print("🔄 Fallback: Loading enemies from workspace...")
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and string.find(obj.Name, "EnemyTemplate_") then
+			local enemyType = obj.Name:gsub("EnemyTemplate_", "")
+			obj.Parent = ReplicatedStorage
+			self.enemyTemplates[enemyType] = obj
+			print("📦 Moved enemy from workspace:", enemyType)
+		end
+	end
+end
+
+function EnemySpawner:getTemplateCount()
+	local count = 0
+	for _ in pairs(self.enemyTemplates) do
+		count = count + 1
+	end
+	return count
+end
+
+-- ========================================================================
+-- PATTERN SELECTION
+-- ========================================================================
+
+function EnemySpawner:selectPattern(roomType)
+	local config = CONFIG.ROOM_CONFIGS[roomType]
+	if not config or not config.usePatterns then
+		return {
+			enemies = config and config.enemies or {},
+			minCount = config and config.minCount or 0,
+			maxCount = config and config.maxCount or 0
+		}
+	end
+
+	-- Calculate total weight
+	local totalWeight = 0
+	for _, pattern in pairs(CONFIG.PATTERNS) do
+		totalWeight = totalWeight + pattern.weight
+	end
+
+	-- Select random pattern based on weight
+	local randomValue = math.random() * totalWeight
+	local currentWeight = 0
+
+	for _, pattern in pairs(CONFIG.PATTERNS) do
+		currentWeight = currentWeight + pattern.weight
+		if randomValue <= currentWeight then
+			print("🎯 Selected pattern:", pattern.name)
+			return pattern
+		end
+	end
+
+	-- Fallback to first pattern
+	local firstPattern = next(CONFIG.PATTERNS)
+	return firstPattern
+end
+
+-- ========================================================================
+-- SPAWN POINT GENERATION
+-- ========================================================================
+
+function EnemySpawner:generateSpawnPoints(roomData, enemyCount)
+	local spawnPoints = {}
+	local roomFloor = self:findRoomFloor(roomData.model)
+
+	if not roomFloor then
+		warn("❌ No floor found for spawning in", roomData.roomID)
+		return spawnPoints
+	end
+
+	local floorPosition = roomFloor.Position
+	local floorSize = roomFloor.Size
+
+	-- Create safe spawn zones (avoid center and edges)
+	local safeZones = {
+		{x = 0, z = 0, radius = 20}, -- Center
+		{x = -15, z = -10, radius = 12}, -- Corners
+		{x = 15, z = -10, radius = 12},
+		{x = -15, z = 10, radius = 12},
+		{x = 15, z = 10, radius = 12}
+	}
+
+	for i = 1, enemyCount do
+		local attempts = 0
+		local validPosition = nil
+
+		while attempts < 30 and not validPosition do
+			local zoneIndex = math.min(math.floor(attempts / 5) + 1, #safeZones)
+			local zone = safeZones[zoneIndex]
+
+			local angle = math.random() * math.pi * 2
+			local distance = math.random() * zone.radius
+
+			local spawnX = floorPosition.X + zone.x + math.cos(angle) * distance
+			local spawnZ = floorPosition.Z + zone.z + math.sin(angle) * distance
+			local spawnY = floorPosition.Y + floorSize.Y/2 + 3
+
+			local spawnPos = Vector3.new(spawnX, spawnY, spawnZ)
+
+			if self:isPositionSafe(spawnPos, spawnPoints) then
+				table.insert(spawnPoints, spawnPos)
+				validPosition = spawnPos
+			end
+
+			attempts = attempts + 1
+		end
+
+		if not validPosition then
+			print("⚠️ Could not generate safe spawn point", i)
+		end
+	end
+
+	print("📍 Generated", #spawnPoints, "out of", enemyCount, "spawn points")
+	return spawnPoints
+end
+
+function EnemySpawner:isPositionSafe(worldPos, existingSpawns)
+	-- Check distance from existing spawns
+	for _, existingPos in pairs(existingSpawns) do
+		if (existingPos - worldPos).Magnitude < 6 then
+			return false
+		end
+	end
+	return true
+end
+
+function EnemySpawner:findRoomFloor(roomModel)
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (
+			string.lower(child.Name):find("floor") or
+				(child.Size.X >= 100 and child.Size.Z >= 70)
+			) then
+			return child
+		end
+	end
+	return nil
+end
+
+-- ========================================================================
+-- ENEMY SPAWNING
+-- ========================================================================
+
+function EnemySpawner:spawnEnemiesInRoom(roomData)
+	print("👹 Spawning enemies for room:", roomData.roomID)
+
+	local roomType = roomData.roomType
+	local pattern = self:selectPattern(roomType)
+
+	if pattern.maxCount == 0 then
+		print("🚫 No enemies for", roomType, "room")
+		return {}
+	end
+
+	local enemyCount = math.random(pattern.minCount, pattern.maxCount)
+	local spawnPoints = self:generateSpawnPoints(roomData, enemyCount)
+
+	if #spawnPoints == 0 then
+		print("❌ No valid spawn points")
+		return {}
+	end
+
+	print("👹 Spawning", #spawnPoints, "enemies using", pattern.name)
+
+	local spawnedEnemies = {}
+
+	-- Spawn enemies
+	for i = 1, #spawnPoints do
+		local enemyType = pattern.enemies[math.random(1, #pattern.enemies)]
+		local enemy = self:spawnEnemy(enemyType, spawnPoints[i], roomData)
+		if enemy then
+			table.insert(spawnedEnemies, enemy)
+		end
+	end
+
+	return spawnedEnemies
+end
+
+function EnemySpawner:spawnEnemy(enemyType, position, roomData)
+	local template = self.enemyTemplates[enemyType]
+	if not template then
+		warn("❌ No template for enemy:", enemyType)
+		return nil
+	end
+
+	-- Clone and position enemy
+	local enemy = template:Clone()
+	enemy.Name = enemyType .. "_" .. tick()
+	enemy.Parent = roomData.model
+
+	self:positionEnemy(enemy, position)
+	self:setupEnemyTags(enemy, roomData)
+
+	-- Track spawned enemy
+	table.insert(self.spawnedEnemies, enemy)
+
+	print("👹 Spawned", enemyType, "at", position)
+	return enemy
+end
+
+function EnemySpawner:positionEnemy(enemy, position)
+	if enemy.PrimaryPart then
+		enemy:SetPrimaryPartCFrame(CFrame.new(position))
+	elseif enemy:FindFirstChild("HumanoidRootPart") then
+		enemy.HumanoidRootPart.Position = position
+	else
+		-- Fallback positioning
+		local mainPart = enemy:FindFirstChildOfClass("BasePart")
+		if mainPart then
+			local offset = position - mainPart.Position
+			for _, part in pairs(enemy:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Position = part.Position + offset
+				end
+			end
+		end
+	end
+end
+
+function EnemySpawner:setupEnemyTags(enemy, roomData)
+	-- Add tags for identification
+	CollectionService:AddTag(enemy, "RoomEnemy")
+	enemy:SetAttribute("RoomID", roomData.roomID)
+	enemy:SetAttribute("SpawnTime", tick())
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+function EnemySpawner:listTemplates()
+	print("📋 LOADED ENEMY TEMPLATES:")
+	local categories = {}
+
+	for enemyType, template in pairs(self.enemyTemplates) do
+		local category = "Basic"
+		if template.Parent and template.Parent.Name ~= "EnemyTemplates" then
+			category = template.Parent.Name
+		end
+
+		if not categories[category] then
+			categories[category] = {}
+		end
+		table.insert(categories[category], enemyType)
+	end
+
+	for category, enemies in pairs(categories) do
+		print("📂", category .. ":")
+		for _, enemyType in pairs(enemies) do
+			print(" ✅", enemyType)
+		end
+	end
+
+	print("📊 Total templates:", self:getTemplateCount())
+end
+
+function EnemySpawner:clearAllEnemies()
+	for _, enemy in pairs(self.spawnedEnemies) do
+		if enemy.Parent then
+			enemy:Destroy()
+		end
+	end
+	self.spawnedEnemies = {}
+	print("🧹 Cleared all spawned enemies")
+end
+
+function EnemySpawner:getSpawnedEnemyCount()
+	local count = 0
+	for _, enemy in pairs(self.spawnedEnemies) do
+		if enemy.Parent then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+-- ========================================================================
+-- EXPORT MODULE
+-- ========================================================================
+
+print("📦 EnemySpawner module loaded!")
+return EnemySpawner
