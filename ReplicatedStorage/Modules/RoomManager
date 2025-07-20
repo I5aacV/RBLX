@@ -1,5 +1,5 @@
 -- ========================================================================
--- ROOM MANAGER - Central Room State Management
+-- ROOM MANAGER - Central Room State Management (FIXED - NO DUPLICATES)
 -- ModuleScript in ReplicatedStorage/Modules/RoomManager
 -- ========================================================================
 
@@ -88,7 +88,7 @@ end
 -- ENEMY TRACKING
 -- ========================================================================
 
--- REPLACE your addEnemyToRoom function with this:
+-- Add enemy to room tracking
 function RoomManager:addEnemyToRoom(roomData, enemy)
 	-- Initialize room tracking if needed
 	if not self.activeRooms[roomData] then
@@ -105,7 +105,7 @@ function RoomManager:addEnemyToRoom(roomData, enemy)
 
 	print("👹 Added enemy to room:", roomData.roomID, "Count:", self.roomEnemyCounts[roomData])
 
-	-- NEW: Lock doors when first enemy is added
+	-- Lock doors when first enemy is added
 	if self.roomEnemyCounts[roomData] == 1 then
 		print("🔒 First enemy spawned - locking doors")
 		self:lockRoomDoors(roomData)
@@ -138,7 +138,7 @@ function RoomManager:removeEnemyFromRoom(roomData, enemy)
 
 	-- Check if room is cleared
 	if remaining <= 0 then
-		self:onRoomCleared(roomData)
+		self:handleRoomCleared(roomData)
 	end
 
 	-- Trigger callbacks
@@ -151,8 +151,8 @@ end
 -- ROOM STATE MANAGEMENT
 -- ========================================================================
 
--- REPLACE your onRoomCleared function with this:
-function RoomManager:onRoomCleared(roomData)
+-- Handle room being cleared (internal function)
+function RoomManager:handleRoomCleared(roomData)
 	print("🎉 ROOM CLEARED:", roomData.roomID)
 
 	-- Update state
@@ -161,7 +161,7 @@ function RoomManager:onRoomCleared(roomData)
 	self.activeRooms[roomData] = nil
 	self.roomEnemyCounts[roomData] = nil
 
-	-- NEW: Unlock doors when room is cleared
+	-- Unlock doors when room is cleared
 	self:unlockRoomDoors(roomData)
 
 	-- Trigger callbacks
@@ -185,7 +185,9 @@ function RoomManager:getRoomState(roomID)
 	return self.roomStates[roomID] or "unknown"
 end
 
--- ADD THESE NEW FUNCTIONS to your RoomManager:
+-- ========================================================================
+-- DOOR MANAGEMENT INTEGRATION (SINGLE VERSION - NO DUPLICATES)
+-- ========================================================================
 
 -- Lock doors for a room (delegates to SharedDoorManager)
 function RoomManager:lockRoomDoors(roomData)
@@ -210,32 +212,6 @@ function RoomManager:unlockRoomDoors(roomData)
 	else
 		warn("⚠️ SharedDoorManager not found!")
 		print("💡 Make sure SharedDoorManager script is running")
-	end
-end
-
--- ========================================================================
--- DOOR MANAGEMENT INTEGRATION
--- ========================================================================
-
--- Lock doors for a room (delegates to SharedDoorManager)
-function RoomManager:lockRoomDoors(roomData)
-	print("🔒 Locking doors for room:", roomData.roomID)
-
-	if _G.SharedDoorManager then
-		_G.SharedDoorManager:lockRoomDoors(roomData.model)
-	else
-		warn("⚠️ SharedDoorManager not found!")
-	end
-end
-
--- Unlock doors for a room (delegates to SharedDoorManager)
-function RoomManager:unlockRoomDoors(roomData)
-	print("🔓 Unlocking doors for room:", roomData.roomID)
-
-	if _G.SharedDoorManager then
-		_G.SharedDoorManager:unlockRoomDoors(roomData.model)
-	else
-		warn("⚠️ SharedDoorManager not found!")
 	end
 end
 
