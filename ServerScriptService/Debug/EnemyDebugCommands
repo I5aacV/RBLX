@@ -1,1 +1,86 @@
+-- ======================================================================== 
+-- ENEMY DEBUG CONSOLE COMMANDS - Create as new script in ServerScriptService
+-- ======================================================================== 
 
+local Players = game:GetService("Players")
+
+-- Wait for enemy spawner to load
+local function waitForEnemySpawner()
+	local attempts = 0
+	while not _G.EnemySpawner and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+	return _G.EnemySpawner
+end
+
+-- Initialize debug commands
+local function setupDebugCommands()
+	local enemySpawner = waitForEnemySpawner()
+	if not enemySpawner then
+		warn("❌ EnemySpawner not found! Debug commands unavailable.")
+		return
+	end
+
+	print("🔧 ENEMY DEBUG COMMANDS LOADED!")
+	print("📋 Available commands:")
+	print("  _G.DebugEnemies() - Show enemy counter status")
+	print("  _G.FixEnemyCounters() - Repair broken counters")
+	print("  _G.ClearAllEnemies() - Kill all enemies instantly")
+	print("  _G.ListAllEnemies() - Show all spawned enemies")
+
+	-- Global debug functions
+	_G.DebugEnemies = function()
+		print("🔍 DEBUGGING ENEMY COUNTERS...")
+		enemySpawner:debugEnemyCounters()
+	end
+
+	_G.FixEnemyCounters = function()
+		print("🔧 FIXING ENEMY COUNTERS...")
+		enemySpawner:forceFixCounters()
+		print("✅ Counter fix complete! Run _G.DebugEnemies() to verify.")
+	end
+
+	_G.ClearAllEnemies = function()
+		print("💀 KILLING ALL ENEMIES...")
+		local killed = 0
+		for roomData, enemies in pairs(enemySpawner.activeRooms) do
+			for _, enemy in pairs(enemies) do
+				local humanoid = enemy:FindFirstChild("Humanoid")
+				if humanoid and humanoid.Health > 0 then
+					humanoid.Health = 0
+					killed = killed + 1
+				end
+			end
+		end
+		print("💀 Killed", killed, "enemies")
+	end
+
+	_G.ListAllEnemies = function()
+		print("📋 ALL SPAWNED ENEMIES:")
+		local total = 0
+		for roomData, enemies in pairs(enemySpawner.activeRooms) do
+			print("🏠 Room:", roomData.roomType)
+			for i, enemy in pairs(enemies) do
+				local humanoid = enemy:FindFirstChild("Humanoid")
+				local health = humanoid and humanoid.Health or "No Humanoid"
+				local status = (humanoid and humanoid.Health > 0) and "ALIVE" or "DEAD"
+				print("  ", i, enemy.Name, "Health:", health, "Status:", status)
+				total = total + 1
+			end
+		end
+		print("📊 Total enemies:", total)
+	end
+
+	-- Auto-debug on room clear failures
+	local originalOnRoomCleared = enemySpawner.onRoomCleared
+	enemySpawner.onRoomCleared = function(self, roomData)
+		print("🎉 Room clearing for:", roomData.roomType)
+		originalOnRoomCleared(self, roomData)
+	end
+end
+
+-- Run setup
+setupDebugCommands()
+
+print("🔧 Enemy Debug System loaded! Use console commands to debug enemy issues.")
