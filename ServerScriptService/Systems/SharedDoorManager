@@ -1,6 +1,6 @@
 -- ========================================================================
--- FIXED SHARED DOOR SYSTEM FOR ROBLOX DUNGEON
--- Place this in ServerScriptService 
+-- FIXED SHARED DOOR SYSTEM FOR ROBLOX DUNGEON - NO DUPLICATES
+-- Replace your entire SharedDoorManager with this cleaned version
 -- ========================================================================
 
 local CollectionService = game:GetService("CollectionService")
@@ -75,7 +75,11 @@ function SharedDoorManager.new()
 	return self
 end
 
--- ADD THIS FUNCTION (it's missing but called by enemy integration):
+-- ========================================================================
+-- UTILITY FUNCTIONS (SINGLE VERSIONS ONLY)
+-- ========================================================================
+
+-- Find floor in room model (SINGLE VERSION)
 function SharedDoorManager:findRoomFloor(roomModel)
 	for _, child in pairs(roomModel:GetDescendants()) do
 		if child:IsA("BasePart") and (
@@ -88,7 +92,7 @@ function SharedDoorManager:findRoomFloor(roomModel)
 	return nil
 end
 
--- ALSO ADD THIS CHECK to prevent errors if someone tries to lock doors before SharedDoors are created:
+-- Check if room has doors (utility function)
 function SharedDoorManager:hasAnyDoorsForRoom(roomName)
 	for doorKey, door in pairs(self.doors) do
 		local room1 = door:GetAttribute("Room1")
@@ -101,7 +105,11 @@ function SharedDoorManager:hasAnyDoorsForRoom(roomName)
 	return false
 end
 
--- UPDATE your lockRoomDoorsForEnemies function to use this check:
+-- ========================================================================
+-- ENEMY INTEGRATION FUNCTIONS (SINGLE VERSIONS ONLY)
+-- ========================================================================
+
+-- Lock all doors when enemies spawn in a room (SINGLE VERSION)
 function SharedDoorManager:lockRoomDoorsForEnemies(roomModel)
 	print("🔒 ENEMY SPAWN: Locking doors for room:", roomModel.Name)
 
@@ -139,51 +147,13 @@ function SharedDoorManager:lockRoomDoorsForEnemies(roomModel)
 	end
 end
 
--- ========================================================================
--- ENEMY INTEGRATION FUNCTIONS - ADD THESE TO SharedDoorManager
--- ========================================================================
-
--- Lock all doors when enemies spawn in a room
-function SharedDoorManager:lockRoomDoorsForEnemies(roomModel)
-	print("🔒 ENEMY SPAWN: Locking doors for room:", roomModel.Name)
-
-	local roomName = roomModel.Name
-	local doorsLocked = 0
-
-	for doorKey, door in pairs(self.doors) do
-		local room1 = door:GetAttribute("Room1")
-		local room2 = door:GetAttribute("Room2")
-
-		-- If this door connects to the room with enemies
-		if room1 == roomName or room2 == roomName then
-			local currentState = door:GetAttribute("State")
-
-			-- Lock BOTH closed AND unlocked doors when enemies spawn
-			if currentState == DoorState.CLOSED or currentState == DoorState.UNLOCKED then
-				-- Store the previous state so we can restore it later
-				door:SetAttribute("PreviousState", currentState)
-				self:setDoorState(door, DoorState.LOCKED)
-				print("  🔒 Enemy-locked door:", door.Name, "(was", currentState .. ")")
-				doorsLocked = doorsLocked + 1
-			end
-		end
-	end
-
-	-- Also create backup barriers if no shared doors found
-	if doorsLocked == 0 then
-		print("⚠️ No shared doors found, creating backup barriers")
-		self:createEnemyBarriers(roomModel)
-	end
-
-	print("🔒 Locked", doorsLocked, "doors for enemy spawn")
-end
-
--- Unlock doors when all enemies are cleared
+-- Unlock doors when all enemies are cleared (SMART VERSION)
 function SharedDoorManager:unlockRoomDoorsAfterClear(roomModel)
-	print("🔓 ENEMIES CLEARED: Unlocking doors for room:", roomModel.Name)
+	print("🔓 ENEMIES CLEARED: Processing smart door unlocking for room:", roomModel.Name)
 
 	local roomName = roomModel.Name
 	local doorsUnlocked = 0
+	local doorsKeptLocked = 0
 
 	for doorKey, door in pairs(self.doors) do
 		local room1 = door:GetAttribute("Room1")
@@ -193,32 +163,100 @@ function SharedDoorManager:unlockRoomDoorsAfterClear(roomModel)
 		if room1 == roomName or room2 == roomName then
 			local currentState = door:GetAttribute("State")
 
-			-- Only unlock LOCKED doors
+			-- Only process LOCKED doors
 			if currentState == DoorState.LOCKED then
-				-- Get the previous state (what it was before locking)
-				local previousState = door:GetAttribute("PreviousState")
+				-- Get the other room connected by this door
+				local otherRoomName = (room1 == roomName) and room2 or room1
 
-				-- If no previous state stored, default to CLOSED
-				if not previousState then
-					previousState = DoorState.CLOSED
+				-- Check if the other room has enemies
+				local otherRoomModel = workspace:FindFirstChild(otherRoomName)
+				local otherRoomHasEnemies = false
+
+				if otherRoomModel then
+					otherRoomHasEnemies = self:roomHasEnemies(otherRoomModel)
 				end
 
-				-- Restore to previous state
-				self:setDoorState(door, previousState)
-				print("  🔓 Restored door:", door.Name, "to", previousState)
-
-				-- Clear the stored previous state
-				door:SetAttribute("PreviousState", nil)
-				doorsUnlocked = doorsUnlocked + 1
+				-- Only unlock if BOTH rooms are clear of enemies
+				if not otherRoomHasEnemies then
+					-- Safe to unlock - both rooms are clear
+					local previousState = door:GetAttribute("PreviousState") or DoorState.CLOSED
+					self:setDoorState(door, previousState)
+					door:SetAttribute("PreviousState", nil)
+					print("  🔓 Unlocked door to", otherRoomName, "(both rooms clear)")
+					doorsUnlocked = doorsUnlocked + 1
+				else
+					-- Keep locked - other room still has enemies
+					print("  🔒 Keeping door locked to", otherRoomName, "(still has enemies)")
+					doorsKeptLocked = doorsKeptLocked + 1
+				end
 			end
 		end
 	end
 
-	-- Remove backup barriers
+	-- Remove backup barriers for this room only
 	self:removeEnemyBarriers(roomModel)
 
-	print("🔓 Unlocked", doorsUnlocked, "doors for room clear")
+	print("🔓 Smart unlock result:", doorsUnlocked, "unlocked,", doorsKeptLocked, "kept locked")
 end
+
+-- Enhanced room enemy detection
+function SharedDoorManager:roomHasEnemies(roomModel)
+	if not roomModel then return false end
+
+	-- Method 1: Check RoomManager if available (most reliable)
+	if _G.RoomManager then
+		-- Try to find room data by model name
+		local allRooms = _G.RoomManager:getAllRooms()
+		for roomID, roomData in pairs(allRooms) do
+			if roomData.model == roomModel then
+				local enemyCount = _G.RoomManager:getEnemyCount(roomData)
+				print("    📊 RoomManager:", enemyCount, "enemies in", roomModel.Name)
+				return enemyCount > 0
+			end
+		end
+
+		-- If not found in RoomManager, try by room name
+		local roomState = _G.RoomManager:getRoomState(roomModel.Name)
+		if roomState == "active" then
+			print("    📊 RoomManager: Room", roomModel.Name, "is active (has enemies)")
+			return true
+		elseif roomState == "cleared" then
+			print("    📊 RoomManager: Room", roomModel.Name, "is cleared")
+			return false
+		end
+	end
+
+	-- Method 2: Direct enemy detection (fallback)
+	local enemyCount = 0
+	for _, child in pairs(roomModel:GetDescendants()) do
+		-- Check for tagged enemies
+		if CollectionService:HasTag(child, "RoomEnemy") then
+			local humanoid = child:FindFirstChild("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				enemyCount = enemyCount + 1
+			end
+			-- Check for enemy models by name
+		elseif child:IsA("Model") and (
+			string.find(string.lower(child.Name), "enemy") or
+				string.find(string.lower(child.Name), "fly") or
+				string.find(string.lower(child.Name), "spider") or
+				string.find(string.lower(child.Name), "gaper") or
+				string.find(string.lower(child.Name), "boss")
+			) then
+			local humanoid = child:FindFirstChild("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				enemyCount = enemyCount + 1
+			end
+		end
+	end
+
+	print("    👹 Direct scan:", enemyCount, "enemies in", roomModel.Name)
+	return enemyCount > 0
+end
+
+-- ========================================================================
+-- BACKUP BARRIER SYSTEM
+-- ========================================================================
 
 -- Create backup barriers if shared doors don't exist yet
 function SharedDoorManager:createEnemyBarriers(roomModel)
@@ -372,19 +410,6 @@ function SharedDoorManager:findAllRooms()
 		end
 	end
 	return rooms
-end
-
--- Find floor in room model
-function SharedDoorManager:findRoomFloor(roomModel)
-	for _, child in pairs(roomModel:GetDescendants()) do
-		if child:IsA("BasePart") and (
-			string.lower(child.Name):find("floor") or 
-				(child.Size.X >= 100 and child.Size.Z >= 80 and child.Size.Y <= 5)
-			) then
-			return child
-		end
-	end
-	return nil
 end
 
 -- Check if two rooms are adjacent and find door position
@@ -621,141 +646,11 @@ function SharedDoorManager:unlockDoor(door)
 end
 
 -- ========================================================================
--- ENEMY DETECTION AND ROOM LOCKING
--- ========================================================================
-
--- Setup room triggers for enemy detection
-function SharedDoorManager:setupRoomTriggers()
-	print("🎯 Setting up room triggers for enemy detection...")
-
-	-- Find all room trigger parts
-	for _, trigger in pairs(CollectionService:GetTagged("RoomTrigger")) do
-		trigger.Touched:Connect(function(hit)
-			local character = hit.Parent
-			local humanoid = character:FindFirstChild("Humanoid")
-
-			if humanoid then
-				local player = Players:GetPlayerFromCharacter(character)
-				if player then
-					local roomModel = trigger.Parent
-
-					-- Small delay to ensure room is loaded
-					task.wait(0.1)
-
-					-- Check for enemies in room
-					if self:roomHasEnemies(roomModel) then
-						print("🚨 Player entered room with enemies:", roomModel.Name)
-						self:lockRoomDoors(roomModel)
-						self:startEnemyMonitoring(roomModel)
-					else
-						print("✅ Player entered safe room:", roomModel.Name)
-					end
-				end
-			end
-		end)
-	end
-
-	print("✅ Room trigger system active")
-end
-
--- Check if room has alive enemies
-function SharedDoorManager:roomHasEnemies(roomModel)
-	for _, child in pairs(roomModel:GetDescendants()) do
-		if CollectionService:HasTag(child, "Enemy") or 
-			CollectionService:HasTag(child, "Monster") or
-			string.find(string.lower(child.Name), "enemy") then
-
-			-- Check if enemy is alive
-			local humanoid = child:FindFirstChild("Humanoid")
-			if humanoid and humanoid.Health > 0 then
-				return true
-			elseif child:IsA("Model") then
-				return true  -- Assume model enemies are alive
-			end
-		end
-	end
-	return false
-end
-
--- Lock all doors connected to a room (FIXED: Locks UNLOCKED doors too)
-function SharedDoorManager:lockRoomDoors(roomModel)
-	print("🔒 Locking ALL doors for room:", roomModel.Name)
-
-	local roomName = roomModel.Name
-
-	for doorKey, door in pairs(self.doors) do
-		local room1 = door:GetAttribute("Room1")
-		local room2 = door:GetAttribute("Room2")
-
-		-- If this door connects to the room with enemies
-		if room1 == roomName or room2 == roomName then
-			local currentState = door:GetAttribute("State")
-
-			-- Lock BOTH closed AND unlocked doors when enemies spawn
-			if currentState == DoorState.CLOSED or currentState == DoorState.UNLOCKED then
-				-- Store the previous state so we can restore it later
-				door:SetAttribute("PreviousState", currentState)
-				self:setDoorState(door, DoorState.LOCKED)
-				print("  🔒 Locked door:", door.Name, "(was", currentState .. ")")
-			end
-		end
-	end
-end
-
--- Unlock all doors connected to a room (FIXED: Restores previous state)
-function SharedDoorManager:unlockRoomDoors(roomModel)
-	print("🔓 Unlocking doors for room:", roomModel.Name)
-
-	local roomName = roomModel.Name
-
-	for doorKey, door in pairs(self.doors) do
-		local room1 = door:GetAttribute("Room1")
-		local room2 = door:GetAttribute("Room2")
-
-		-- If this door connects to the cleared room
-		if room1 == roomName or room2 == roomName then
-			local currentState = door:GetAttribute("State")
-
-			-- Only unlock LOCKED doors
-			if currentState == DoorState.LOCKED then
-				-- Get the previous state (what it was before locking)
-				local previousState = door:GetAttribute("PreviousState")
-
-				-- If no previous state stored, default to CLOSED
-				if not previousState then
-					previousState = DoorState.CLOSED
-				end
-
-				-- Restore to previous state
-				self:setDoorState(door, previousState)
-				print("  🔓 Restored door:", door.Name, "to", previousState)
-
-				-- Clear the stored previous state
-				door:SetAttribute("PreviousState", nil)
-			end
-		end
-	end
-end
-
--- Monitor room for enemy clearance
-function SharedDoorManager:startEnemyMonitoring(roomModel)
-	local connection
-	connection = RunService.Heartbeat:Connect(function()
-		if not self:roomHasEnemies(roomModel) then
-			print("🎉 All enemies cleared in:", roomModel.Name)
-			self:unlockRoomDoors(roomModel)
-			connection:Disconnect()
-		end
-	end)
-end
-
--- ========================================================================
 -- ENHANCED DOOR DETECTION FOR GRID OVERLAY COMPATIBILITY
 -- ========================================================================
 
 -- Scan for wall openings created by Grid Overlay system
 function SharedDoorManager:scanForWallOpenings()
-
 	local rooms = self:findAllRooms()
 	local doorsCreated = 0
 
@@ -803,7 +698,9 @@ function SharedDoorManager:checkForNewDoorOpenings()
 	print("🔄 Checking for new door openings...")
 	local newDoors = self:scanForWallOpenings()
 	if newDoors > 0 then
+		print("✅ Created", newDoors, "new doors")
 	else
+		print("ℹ️ No new doors needed")
 	end
 end
 
@@ -828,45 +725,15 @@ function SharedDoorManager:initialize()
 	local doorsCreated = self:scanForWallOpenings()
 	print("✅ Created", doorsCreated, "shared doors")
 
-	-- Setup trigger systems
-	self:setupRoomTriggers()
-
 	print("🎉 Fixed Shared Door System fully initialized!")
 
 	-- Set up periodic scanning for new rooms/doors
-	spawn(function()
+	task.spawn(function()
 		while true do
 			task.wait(5) -- Check every 5 seconds
 			self:checkForNewDoorOpenings()
 		end
 	end)
-end
-
--- Public API functions
-function SharedDoorManager:manuallyLockRoom(roomName)
-	local roomModel = workspace:FindFirstChild(roomName)
-	if roomModel then
-		self:lockRoomDoors(roomModel)
-	end
-end
-
-function SharedDoorManager:manuallyUnlockRoom(roomName)
-	local roomModel = workspace:FindFirstChild(roomName)
-	if roomModel then
-		self:unlockRoomDoors(roomModel)
-	end
-end
-
-function SharedDoorManager:getDoorState(room1Name, room2Name)
-	local doorKey = self:getDoorKey(room1Name, room2Name)
-	local door = self.doors[doorKey]
-	return door and door:GetAttribute("State") or nil
-end
-
--- Force refresh all doors
-function SharedDoorManager:refreshDoors()
-	print("🔄 Force refreshing all doors...")
-	self:initialize()
 end
 
 -- ========================================================================
@@ -895,30 +762,135 @@ _G.SharedDoorManager:initialize()
 
 print("🎯 Fixed Shared Door System Loaded!")
 print("📋 Features:")
-print("  ✅ One door per room connection")
+print("  ✅ No duplicate functions")
+print("  ✅ Smart door unlocking (both rooms must be clear)")
 print("  ✅ RemoteEvents for secure client-server communication")
 print("  ✅ Automatic wall opening detection")
 print("  ✅ Compatible with Grid Overlay system")
 print("  ✅ Three states: UNLOCKED, CLOSED, LOCKED")
 print("  ✅ Auto-lock when enemies present")
 print("  ✅ Auto-unlock when enemies cleared")
+print("  ✅ Backup barrier system for rooms without doors")
 
---[[
-🔧 MAIN FIXES:
-1. ✅ Added RemoteEvents for client-server communication
-2. ✅ Enhanced door detection to work with Grid Overlay wall openings
-3. ✅ Removed server-side input handling (moved to client)
-4. ✅ Added periodic scanning for new doors
-5. ✅ Better error handling and logging
-6. ✅ Public API for Grid Overlay integration
+-- ========================================================================
+-- DEBUG COMMANDS
+-- ========================================================================
 
-📞 INTEGRATION WITH GRID OVERLAY:
-- Grid Overlay can call: _G.SharedDoorManager:checkForNewDoorOpenings()
-- Automatic scanning detects wall openings and places doors
-- Works with or without Grid Overlay system
+-- Enhanced debug functions
+_G.DebugDoors = function()
+	if _G.SharedDoorManager then
+		print("=== 🚪 DOOR DEBUG REPORT ===")
+		local totalDoors = 0
+		local lockedDoors = 0
+		local unlockedDoors = 0
+		local closedDoors = 0
 
-🎮 CLIENT INTEGRATION:
-- Use RemoteEvents to communicate with client scripts
-- Server validates all unlock requests
-- Progress updates are synchronized
---]]
+		for doorKey, door in pairs(_G.SharedDoorManager.doors) do
+			totalDoors = totalDoors + 1
+			local room1 = door:GetAttribute("Room1")
+			local room2 = door:GetAttribute("Room2")
+			local state = door:GetAttribute("State")
+			local previousState = door:GetAttribute("PreviousState")
+
+			if state == "locked" then
+				lockedDoors = lockedDoors + 1
+			elseif state == "unlocked" then
+				unlockedDoors = unlockedDoors + 1
+			elseif state == "closed" then
+				closedDoors = closedDoors + 1
+			end
+
+			-- Check if both rooms are clear
+			local room1Model = workspace:FindFirstChild(room1)
+			local room2Model = workspace:FindFirstChild(room2)
+			local room1HasEnemies = room1Model and _G.SharedDoorManager:roomHasEnemies(room1Model) or false
+			local room2HasEnemies = room2Model and _G.SharedDoorManager:roomHasEnemies(room2Model) or false
+
+			print("🚪", door.Name)
+			print("  State:", state, previousState and ("(was " .. previousState .. ")") or "")
+			print("  " .. room1 .. ":", room1HasEnemies and "👹 HAS ENEMIES" or "✅ CLEAR")
+			print("  " .. room2 .. ":", room2HasEnemies and "👹 HAS ENEMIES" or "✅ CLEAR")
+
+			-- Highlight problematic doors
+			if state == "unlocked" and (room1HasEnemies or room2HasEnemies) then
+				print("  ⚠️ PROBLEM: Door is unlocked but at least one room has enemies!")
+			elseif state == "locked" and not room1HasEnemies and not room2HasEnemies then
+				print("  💡 SUGGESTION: Both rooms clear, door could be unlocked")
+			end
+			print("")
+		end
+
+		print("📊 SUMMARY:")
+		print("  Total doors:", totalDoors)
+		print("  🔒 Locked:", lockedDoors)
+		print("  🚪 Closed:", closedDoors) 
+		print("  🔓 Unlocked:", unlockedDoors)
+		print("=== END DOOR DEBUG ===")
+	else
+		print("❌ SharedDoorManager not found")
+	end
+end
+
+_G.FixAllDoors = function()
+	if _G.SharedDoorManager then
+		print("🔧 FIXING ALL DOOR STATES...")
+		local fixed = 0
+
+		for doorKey, door in pairs(_G.SharedDoorManager.doors) do
+			local room1 = door:GetAttribute("Room1")
+			local room2 = door:GetAttribute("Room2")
+			local currentState = door:GetAttribute("State")
+
+			-- Get both room models
+			local room1Model = workspace:FindFirstChild(room1)
+			local room2Model = workspace:FindFirstChild(room2)
+
+			if room1Model and room2Model then
+				local room1HasEnemies = _G.SharedDoorManager:roomHasEnemies(room1Model)
+				local room2HasEnemies = _G.SharedDoorManager:roomHasEnemies(room2Model)
+
+				-- Determine correct state
+				local correctState
+				if room1HasEnemies or room2HasEnemies then
+					-- At least one room has enemies - should be locked
+					correctState = "locked"
+				else
+					-- Both rooms clear - should be closed (player can open)
+					correctState = "closed"
+				end
+
+				-- Fix if incorrect
+				if currentState ~= correctState then
+					print("  🔧 Fixing door between", room1, "and", room2)
+					print("    From:", currentState, "To:", correctState)
+					_G.SharedDoorManager:setDoorState(door, correctState)
+					fixed = fixed + 1
+				end
+			end
+		end
+
+		print("✅ Fixed", fixed, "door states")
+	else
+		print("❌ SharedDoorManager not found")
+	end
+end
+
+_G.CheckRoomEnemies = function(roomName)
+	local roomModel = workspace:FindFirstChild(roomName)
+	if roomModel and _G.SharedDoorManager then
+		local hasEnemies = _G.SharedDoorManager:roomHasEnemies(roomModel)
+		print("🔍 Room", roomName, "has enemies:", hasEnemies)
+		return hasEnemies
+	else
+		print("❌ Room not found:", roomName)
+		return false
+	end
+end
+
+print("")
+print("🔧 Debug Commands:")
+print("  _G.DebugDoors() - Show detailed door states")
+print("  _G.FixAllDoors() - Fix any incorrect door states")
+print("  _G.CheckRoomEnemies('RoomName') - Check room enemy status")
+
+return SharedDoorManager
