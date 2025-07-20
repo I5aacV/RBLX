@@ -86,13 +86,25 @@ function EnhancedBossManager.new()
 	end
 
 	function self:spawnAdvancedPedestal(bossModel, roomModel, bossType)
-		local bossPos = self:getBossPosition(bossModel)
-		if not bossPos then 
-			warn("❌ Could not get boss position")
+		-- Find room center instead of boss position
+		local roomCenter = self:getRoomCenter(roomModel)
+		if not roomCenter then 
+			warn("❌ Could not get room center")
 			return 
 		end
 
-		local pedestalPos = bossPos + Vector3.new(0, BOSS_CONFIG.PEDESTAL_HEIGHT, 0)
+		print("📍 Room center:", roomCenter)
+		
+		-- Find the room floor height
+		local floorY = self:findRoomFloorHeight(roomModel)
+		if not floorY then
+			warn("❌ Could not find room floor")
+			return
+		end
+
+		-- Position pedestal at room center, on the floor
+		local pedestalPos = Vector3.new(roomCenter.X, floorY + BOSS_CONFIG.PEDESTAL_HEIGHT, roomCenter.Z)
+		print("📍 Pedestal position:", pedestalPos)
 
 		-- Create enhanced pedestal
 		local pedestal = self:createGoldenPedestal(pedestalPos, roomModel)
@@ -139,7 +151,7 @@ function EnhancedBossManager.new()
 		for _, poolName in pairs(config.pools) do
 			local pool = ItemDatabase.ItemPools[poolName] or {}
 			print("📋 Checking pool:", poolName, "- items:", #pool)
-
+			
 			for _, itemId in pairs(pool) do
 				local item = ItemDatabase:GetItem(itemId)
 				if item and item.unlocked then
@@ -154,7 +166,7 @@ function EnhancedBossManager.new()
 		if #availableItems == 0 then
 			warn("❌ No available items in pools:", table.concat(config.pools, ", "))
 			print("🔄 Falling back to all items...")
-
+			
 			-- Fallback: use any unlocked item
 			for itemId, item in pairs(ItemDatabase.Items) do
 				if item.unlocked then
@@ -280,17 +292,49 @@ function EnhancedBossManager.new()
 		end
 	end
 
-	function self:getBossPosition(bossModel)
-		if bossModel:FindFirstChild("HumanoidRootPart") then
-			return bossModel.HumanoidRootPart.Position
-		elseif bossModel.PrimaryPart then
-			return bossModel.PrimaryPart.Position
-		else
-			for _, child in pairs(bossModel:GetChildren()) do
-				if child:IsA("BasePart") then
-					return child.Position
-				end
+	function self:getRoomCenter(roomModel)
+		-- Find the room floor to get center position
+		local floor = self:findRoomFloor(roomModel)
+		if floor then
+			return floor.Position
+		end
+		
+		-- Fallback: calculate center from all parts
+		local totalPos = Vector3.new(0, 0, 0)
+		local partCount = 0
+		
+		for _, descendant in pairs(roomModel:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				totalPos = totalPos + descendant.Position
+				partCount = partCount + 1
 			end
+		end
+		
+		if partCount > 0 then
+			return totalPos / partCount
+		end
+		
+		-- Final fallback
+		return Vector3.new(0, 0, 0)
+	end
+
+	function self:findRoomFloor(roomModel)
+		for _, child in pairs(roomModel:GetDescendants()) do
+			if child:IsA("BasePart") and (
+				string.lower(child.Name):find("floor") or
+				(child.Size.X >= 100 and child.Size.Z >= 70)
+			) then
+				return child
+			end
+		end
+		return nil
+	end
+
+	function self:findRoomFloorHeight(roomModel)
+		local floor = self:findRoomFloor(roomModel)
+		if floor then
+			-- Return the top surface of the floor
+			return floor.Position.Y + floor.Size.Y / 2
 		end
 		return nil
 	end
