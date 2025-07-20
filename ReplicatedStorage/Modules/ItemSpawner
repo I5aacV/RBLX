@@ -490,17 +490,119 @@ function ItemSpawner:clearAllItems()
 	print("🧹 Cleared all spawned items")
 end
 
--- ======================================================================== 
--- INITIALIZATION
--- ======================================================================== 
+-- Get items currently in a room (for checking if room has items)
+function ItemSpawner:getItemsInRoom(roomModel)
+	local itemsInRoom = {}
+	for _, itemData in pairs(self.spawnedItems) do
+		if itemData.room == roomModel then
+			table.insert(itemsInRoom, itemData.item)
+		end
+	end
+	return itemsInRoom
+end
 
--- ========================================================================
--- EXPORT MODULE (No global creation - loader handles this)
--- ========================================================================
+-- Handle boss room clearing (spawn boss-specific items)
+function ItemSpawner:onBossRoomCleared(roomModel)
+	print("👑 Boss room cleared:", roomModel.Name)
+	task.wait(2) -- Wait for room cleanup
 
--- ========================================================================
--- EXPORT MODULE (No global creation - loader handles this)
--- ========================================================================
+	local floor = self:findRoomFloor(roomModel)
+	if not floor then
+		warn("❌ No floor found in boss room")
+		return
+	end
 
+	-- Try to get boss item from ItemDatabase
+	local itemId = nil
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+		if success and ItemDatabase then
+			itemId = ItemDatabase:GetRandomItemFromPool("BOSS")
+			if itemId then
+				local itemData = ItemDatabase:GetItem(itemId)
+				print("👑 Selected boss item:", itemData.name)
+			end
+		end
+	end
+
+	-- Fallback to any available item
+	if not itemId then
+		for id, _ in pairs(self.itemTemplates) do
+			itemId = id
+			break
+		end
+	end
+
+	if not itemId then
+		warn("❌ No items available for boss room")
+		return
+	end
+
+	-- Calculate spawn position (center of room)
+	local floorPosition = floor.Position
+	local spawnPosition = Vector3.new(
+		floorPosition.X,
+		floorPosition.Y + floor.Size.Y/2 + CONFIG.PEDESTAL_HEIGHT,
+		floorPosition.Z
+	)
+
+	self:spawnItemInRoom(roomModel, itemId, spawnPosition)
+	print("👑 Boss item spawned!")
+end
+
+-- Enhanced treasure room spawning with better item selection
+function ItemSpawner:onTreasureRoomCreated(roomModel)
+	print("🏆 Treasure room created:", roomModel.Name)
+	task.wait(2) -- Wait for room setup
+
+	local floor = self:findRoomFloor(roomModel)
+	if not floor then
+		warn("❌ No floor found in treasure room")
+		return
+	end
+
+	-- Try to use ItemDatabase if available
+	local itemId = nil
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+		if success and ItemDatabase then
+			itemId = ItemDatabase:GetRandomItemFromPool("TREASURE_ROOM")
+			if itemId then
+				local itemData = ItemDatabase:GetItem(itemId)
+				print("✨ Selected", itemData.rarity, "item:", itemData.name)
+			end
+		end
+	end
+
+	-- Fallback to random available item
+	if not itemId then
+		local availableItems = {}
+		for id, _ in pairs(self.itemTemplates) do
+			table.insert(availableItems, id)
+		end
+		if #availableItems > 0 then
+			itemId = availableItems[math.random(1, #availableItems)]
+		end
+	end
+
+	if not itemId then
+		warn("❌ No items available for treasure room")
+		return
+	end
+
+	-- Calculate spawn position
+	local floorPosition = floor.Position
+	local spawnPosition = Vector3.new(
+		floorPosition.X,
+		floorPosition.Y + floor.Size.Y/2 + CONFIG.PEDESTAL_HEIGHT,
+		floorPosition.Z
+	)
+
+	self:spawnItemInRoom(roomModel, itemId, spawnPosition)
+end
 print("📦 ItemSpawner module loaded!")
 return ItemSpawner
