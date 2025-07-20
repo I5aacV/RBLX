@@ -1,1 +1,159 @@
+-- ========================================================================
+-- ROOM MANAGER LOADER - ServerScript
+-- Place this in ServerScriptService/Core/RoomManagerLoader
+-- ========================================================================
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- Wait for and load the RoomManager module
+local RoomManager = require(ReplicatedStorage.Modules.RoomManager)
+
+-- Create global instance
+local roomManagerInstance = RoomManager.new()
+_G.RoomManager = roomManagerInstance
+
+-- ========================================================================
+-- INTEGRATION WITH EXISTING SYSTEMS
+-- ========================================================================
+
+-- Connect to player room entry (existing RemoteEvent)
+local roomEnterEvent = ReplicatedStorage:WaitForChild("PlayerEnteredRoom", 10)
+if roomEnterEvent then
+	roomEnterEvent.OnServerEvent:Connect(function(player, roomID)
+		local roomData = roomManagerInstance:onPlayerEnteredRoom(roomID)
+		if roomData then
+			print("🎮 Player", player.Name, "entered room:", roomID)
+		end
+	end)
+	print("🔗 Connected to PlayerEnteredRoom event")
+else
+	warn("❌ PlayerEnteredRoom RemoteEvent not found!")
+end
+
+-- ========================================================================
+-- CALLBACK REGISTRATIONS
+-- ========================================================================
+
+-- Register with BossRewardSystem (if it exists)
+spawn(function()
+	local attempts = 0
+	while not _G.BossRewardManager and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.BossRewardManager then
+		roomManagerInstance:onRoomCleared(function(roomData)
+			if roomData.roomType == "Boss" then
+				print("👑 Boss room cleared, notifying BossRewardSystem")
+				-- BossRewardSystem will handle this via its existing hook
+			end
+		end)
+		print("🔗 Connected to BossRewardSystem")
+	else
+		print("⚠️ BossRewardManager not found - boss rewards may not work")
+	end
+end)
+
+-- Register with ItemEffects (if it exists)
+spawn(function()
+	local attempts = 0
+	while not _G.ItemEffects and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.ItemEffects then
+		roomManagerInstance:onRoomCleared(function(roomData)
+			-- Charge active items for all players when room clears
+			for _, player in pairs(Players:GetPlayers()) do
+				_G.ItemEffects:OnRoomCleared(player)
+			end
+		end)
+		print("🔗 Connected to ItemEffects")
+	else
+		print("⚠️ ItemEffects not found - active item charging may not work")
+	end
+end)
+
+-- ========================================================================
+-- DUNGEON GENERATOR INTEGRATION
+-- ========================================================================
+
+-- Auto-register rooms created by DungeonGenerator
+spawn(function()
+	local attempts = 0
+	while not _G.DungeonGenerator and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.DungeonGenerator and _G.DungeonGenerator.rooms then
+		print("🏗️ Auto-registering rooms from DungeonGenerator...")
+
+		for _, dungeonRoomData in pairs(_G.DungeonGenerator.rooms) do
+			roomManagerInstance:registerRoom(
+				dungeonRoomData.model,
+				dungeonRoomData.roomType,
+				dungeonRoomData.connections,
+				dungeonRoomData.gridX,
+				dungeonRoomData.gridY
+			)
+		end
+
+		print("✅ Registered", roomManagerInstance:getTotalRoomCount(), "rooms from DungeonGenerator")
+	else
+		print("⚠️ DungeonGenerator not found - rooms must be registered manually")
+	end
+end)
+
+-- ========================================================================
+-- DEBUG COMMANDS
+-- ========================================================================
+
+-- Global debug functions
+_G.DebugRooms = function()
+	roomManagerInstance:debugPrint()
+end
+
+_G.GetRoomState = function(roomID)
+	local state = roomManagerInstance:getRoomState(roomID)
+	print("🏠 Room", roomID, "state:", state)
+	return state
+end
+
+_G.ClearAllRooms = function()
+	print("🧹 Force clearing all active rooms...")
+	local activeRooms = roomManagerInstance:getActiveRooms()
+	for _, roomData in pairs(activeRooms) do
+		roomManagerInstance:onRoomCleared(roomData)
+	end
+	print("✅ All rooms cleared")
+end
+
+_G.ListAllRooms = function()
+	print("📋 ALL REGISTERED ROOMS:")
+	local allRooms = roomManagerInstance:getAllRooms()
+	for roomID, roomData in pairs(allRooms) do
+		local state = roomManagerInstance:getRoomState(roomID)
+		local enemyCount = roomManagerInstance:getEnemyCount(roomData)
+		print("🏠", roomID, "| Type:", roomData.roomType, "| State:", state, "| Enemies:", enemyCount)
+	end
+end
+
+-- ========================================================================
+-- INITIALIZATION COMPLETE
+-- ========================================================================
+
+print("✅ RoomManager system loaded and available globally!")
+print("🏠 Room state centralization active")
+print("🔗 Integration with existing systems started")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.DebugRooms() - Show room status")
+print("  _G.GetRoomState('roomID') - Check specific room")
+print("  _G.ClearAllRooms() - Force clear all rooms")
+print("  _G.ListAllRooms() - List all registered rooms")
+print("")
+print("🎯 RoomManager ready to coordinate room state!")
