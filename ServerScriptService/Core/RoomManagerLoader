@@ -108,6 +108,31 @@ spawn(function()
 	end
 end)
 
+-- Wait for SharedDoorManager and verify integration
+spawn(function()
+	local attempts = 0
+	while not _G.SharedDoorManager and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.SharedDoorManager then
+		print("🔗 RoomManager connected to SharedDoorManager")
+
+		-- Verify the door manager has enemy integration functions
+		if _G.SharedDoorManager.onEnemiesSpawned and _G.SharedDoorManager.onEnemiesCleared then
+			print("✅ Door-Enemy integration: Complete")
+		else
+			warn("⚠️ SharedDoorManager missing enemy integration functions!")
+			print("💡 Update SharedDoorManager with enemy integration code")
+		end
+
+	else
+		warn("⚠️ SharedDoorManager not found - door control disabled")
+		print("💡 Make sure SharedDoorManager script is running")
+	end
+end)
+
 -- ========================================================================
 -- DEBUG COMMANDS
 -- ========================================================================
@@ -141,6 +166,8 @@ _G.ListAllRooms = function()
 		print("🏠", roomID, "| Type:", roomData.roomType, "| State:", state, "| Enemies:", enemyCount)
 	end
 end
+
+
 
 -- ========================================================================
 -- INITIALIZATION COMPLETE
