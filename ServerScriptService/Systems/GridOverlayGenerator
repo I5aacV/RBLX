@@ -1157,7 +1157,6 @@ function GridOverlayGenerator:notifyDoorManager(roomModel)
 	task.spawn(function()
 		task.wait(0.5)
 		if _G.SharedDoorManager then
-			print("🔗 Notifying SharedDoorManager about completed room:", roomModel.Name)
 			_G.SharedDoorManager:checkForNewDoorOpenings()
 		else
 			print("⚠️ SharedDoorManager not found - doors may not be created automatically")
