@@ -6,7 +6,12 @@
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+
+print("[EnemySpawner] ModuleScript started loading...")
 local EnemySpawner = {}
+
+print("[EnemySpawner] Table initialized:", EnemySpawner)
+
 EnemySpawner.__index = EnemySpawner
 
 -- ========================================================================
@@ -356,6 +361,7 @@ end
 -- ========================================================================
 
 function EnemySpawner:listTemplates()
+	print("[EnemySpawner] listTemplates() called") -- Debug line
 	print("📋 LOADED ENEMY TEMPLATES:")
 	local categories = {}
 
