@@ -1,5 +1,5 @@
 -- ========================================================================
--- ITEM EFFECTS MANAGER - Phase 1 Week 1 Day 3-4
+-- ITEM EFFECTS MANAGER - COMPLETE WITH HEALTH & STATS INTEGRATION
 -- Place this as a ModuleScript in ReplicatedStorage named "ItemEffects"
 -- ========================================================================
 
@@ -10,6 +10,26 @@ local ItemEffects = {}
 
 -- Reference to ItemDatabase (will be required)
 local ItemDatabase = require(script.Parent.ItemDatabase)
+
+-- ========================================================================
+-- CREATE REMOTEEVENTS FOR COMMUNICATION
+-- ========================================================================
+
+-- Create RemoteEvent for health updates
+local healthUpdateEvent = ReplicatedStorage:FindFirstChild("UpdatePlayerHealth")
+if not healthUpdateEvent then
+	healthUpdateEvent = Instance.new("RemoteEvent")
+	healthUpdateEvent.Name = "UpdatePlayerHealth"
+	healthUpdateEvent.Parent = ReplicatedStorage
+end
+
+-- Create RemoteEvent for stats updates
+local statsUpdateEvent = ReplicatedStorage:FindFirstChild("UpdatePlayerStats")
+if not statsUpdateEvent then
+	statsUpdateEvent = Instance.new("RemoteEvent")
+	statsUpdateEvent.Name = "UpdatePlayerStats"
+	statsUpdateEvent.Parent = ReplicatedStorage
+end
 
 -- ========================================================================
 -- PLAYER DATA STORAGE
@@ -131,7 +151,7 @@ function ItemEffects:AddItem(player, itemId)
 	-- Recalculate all stats
 	self:RecalculateStats(player)
 
-	-- Apply stats to character
+	-- Apply stats to character (THIS IS KEY - includes health updates)
 	self:ApplyStatsToCharacter(player)
 
 	print("✅ Added item to", player.Name .. ":", item.name)
@@ -216,15 +236,54 @@ function ItemEffects:ApplyEffect(player, effect, sourceItemId)
 	elseif effect.type == "LUCK" then
 		stats.luck = stats.luck + effect.value
 
+		-- ========================================================================
+		-- HEALTH EFFECTS WITH PROPER HEART CONVERSION
+		-- ========================================================================
+
 	elseif effect.type == "HEALTH_UP" then
-		stats.maxHearts = stats.maxHearts + math.floor(effect.value / 2) -- Convert hits to hearts
+		-- Add the hits to current health first
 		stats.currentHearts = stats.currentHearts + effect.value
 
+		-- Calculate required max hearts to accommodate current health
+		local requiredMaxHearts = math.ceil(stats.currentHearts / 2)
+
+		-- Increase max hearts if current health exceeds the limit
+		if requiredMaxHearts > stats.maxHearts then
+			local heartsAdded = requiredMaxHearts - stats.maxHearts
+			stats.maxHearts = requiredMaxHearts
+			print("💖 Health Up! Added", effect.value, "hits")
+			print("  ↳ Increased max hearts by", heartsAdded, "to accommodate", stats.currentHearts, "total hits")
+		else
+			print("💚 Health Up! Added", effect.value, "hits (no max increase needed)")
+		end
+
+		print("  📊 Result: Max Hearts:", stats.maxHearts, "Current Hits:", stats.currentHearts)
+
 	elseif effect.type == "HEALTH_DOWN" then
-		stats.currentHearts = math.max(2, stats.currentHearts + effect.value) -- Minimum 1 heart
+		-- Reduce current health first
+		stats.currentHearts = math.max(2, stats.currentHearts + effect.value) -- effect.value is negative
+
+		-- Optionally reduce max hearts if the effect specifies it
+		local hitsToRemove = math.abs(effect.value)
+		local heartsToRemove = math.floor(hitsToRemove / 2)
+
+		if heartsToRemove > 0 then
+			stats.maxHearts = math.max(1, stats.maxHearts - heartsToRemove)
+			print("💔 Health Down! Removed", hitsToRemove, "hits and", heartsToRemove, "max hearts")
+		else
+			print("💔 Health Down! Removed", hitsToRemove, "hits (no max change)")
+		end
+
+		print("  📊 Result: Max Hearts:", stats.maxHearts, "Current Hits:", stats.currentHearts)
 
 	elseif effect.type == "HEAL" then
-		stats.currentHearts = math.min(stats.maxHearts * 2, stats.currentHearts + effect.value)
+		-- Heal current health without increasing max (stays within current max)
+		local maxHits = stats.maxHearts * 2
+		local oldHits = stats.currentHearts
+		stats.currentHearts = math.min(maxHits, stats.currentHearts + effect.value)
+
+		local actualHealing = stats.currentHearts - oldHits
+		print("💚 Healed", actualHealing, "hits! Current:", stats.currentHearts, "/", maxHits)
 
 		-- Special Abilities
 	elseif effect.type == "FLIGHT" then
@@ -384,7 +443,7 @@ function ItemEffects:ApplySynergyBonus(player, itemId1, itemId2)
 end
 
 -- ========================================================================
--- CHARACTER INTEGRATION
+-- CHARACTER INTEGRATION (WITH HEALTH & STATS UPDATES)
 -- ========================================================================
 
 -- Apply calculated stats to player's character
@@ -400,12 +459,40 @@ function ItemEffects:ApplyStatsToCharacter(player)
 		humanoid.WalkSpeed = math.max(0, stats.speed)
 	end
 
-	-- Apply health changes to heart system
-	if _G.HeartSystem and player == game.Players.LocalPlayer then
-		-- Update max hearts if changed
-		if _G.HeartSystem.maxHearts ~= stats.maxHearts then
-			_G.HeartSystem.maxHearts = stats.maxHearts
-			_G.HeartSystem:setHits(stats.currentHearts)
+	-- ========================================================================
+	-- HEALTH INTEGRATION WITH HEART SYSTEM
+	-- ========================================================================
+
+	-- Update heart system via RemoteEvent (client-side)
+	local maxHearts = stats.maxHearts
+	local currentHits = stats.currentHearts
+
+	print("🔄 Sending health update to client:")
+	print("  Player:", player.Name)
+	print("  Max Hearts:", maxHearts)
+	print("  Current Hits:", currentHits)
+
+	-- Send to client to update heart UI
+	pcall(function()
+		healthUpdateEvent:FireClient(player, maxHearts, currentHits)
+	end)
+
+	-- Update character's actual health to match
+	if humanoid then
+		-- Calculate health values (each heart = 10 health, each hit = 5 health)
+		local newMaxHealth = maxHearts * 10
+		local newCurrentHealth = math.min(currentHits * 5, newMaxHealth)
+
+		-- Update max health first
+		if humanoid.MaxHealth ~= newMaxHealth then
+			humanoid.MaxHealth = newMaxHealth
+			print("  Updated MaxHealth to:", newMaxHealth)
+		end
+
+		-- Update current health
+		if math.abs(humanoid.Health - newCurrentHealth) > 0.1 then -- Avoid tiny differences
+			humanoid.Health = newCurrentHealth
+			print("  Updated Health to:", newCurrentHealth)
 		end
 	end
 
@@ -419,7 +506,61 @@ function ItemEffects:ApplyStatsToCharacter(player)
 		self:UpdateShootingSystem(player, stats)
 	end
 
+	-- Send updated stats to client for UI
+	self:SendStatsToClient(player)
+
 	print("⚡ Applied stats to character for", player.Name)
+end
+
+-- ========================================================================
+-- STATS COMMUNICATION WITH CLIENT
+-- ========================================================================
+
+-- Send stats to client for UI display
+function ItemEffects:SendStatsToClient(player)
+	if not player or not player.Parent then return end
+
+	local playerData = self:GetPlayerData(player)
+	if not playerData then return end
+
+	local stats = playerData.stats
+	local calculatedDamage = self:GetPlayerDamage(player)
+
+	-- Prepare stats data for client
+	local clientStats = {
+		-- Combat Stats
+		damage = calculatedDamage,
+		fireRate = stats.fireRate,
+		shotSpeed = stats.shotSpeed,
+		range = stats.range,
+
+		-- Character Stats
+		speed = stats.speed,
+		luck = stats.luck,
+
+		-- Health Stats
+		maxHearts = stats.maxHearts,
+		currentHearts = stats.currentHearts,
+		extraLives = stats.extraLives,
+
+		-- Special Abilities
+		canFly = stats.canFly or false,
+		hasSpectralTears = stats.hasSpectralTears or false,
+		hasPiercingTears = stats.hasPiercingTears or false,
+		hasHomingTears = stats.hasHomingTears or false,
+		hasExplosiveTears = stats.hasExplosiveTears or false,
+
+		-- Meta info
+		itemCount = #playerData.items,
+		items = playerData.items
+	}
+
+	-- Send to client
+	pcall(function()
+		statsUpdateEvent:FireClient(player, clientStats)
+	end)
+
+	print("📊 Sent stats to", player.Name, "- Items:", clientStats.itemCount)
 end
 
 -- Enable flight for player
@@ -622,6 +763,60 @@ function ItemEffects:AddTemporaryEffect(player, effectType, value, duration)
 end
 
 -- ========================================================================
+-- HEALTH SYSTEM FUNCTIONS
+-- ========================================================================
+
+-- Force update player health (useful for debugging)
+function ItemEffects:ForceUpdatePlayerHealth(player)
+	self:ApplyStatsToCharacter(player)
+end
+
+-- Get player's health info in a readable format
+function ItemEffects:GetPlayerHealthInfo(player)
+	local playerData = self:GetPlayerData(player)
+	local stats = playerData.stats
+
+	return {
+		maxHearts = stats.maxHearts,
+		currentHits = stats.currentHearts,
+		maxHits = stats.maxHearts * 2,
+		healthPercentage = (stats.currentHearts / (stats.maxHearts * 2)) * 100
+	}
+end
+
+-- Debug function to print health status
+function ItemEffects:PrintPlayerHealth(player)
+	local healthInfo = self:GetPlayerHealthInfo(player)
+	print("=== HEALTH STATUS FOR " .. player.Name .. " ===")
+	print("💖 Hearts:", healthInfo.currentHits .. "/" .. healthInfo.maxHits, 
+		"(" .. healthInfo.maxHearts .. " max hearts)")
+	print("📊 Health:", string.format("%.1f", healthInfo.healthPercentage) .. "%")
+end
+
+-- Called when player takes damage (some items trigger on damage)
+function ItemEffects:OnPlayerDamaged(player, damage)
+	local playerData = self:GetPlayerData(player)
+
+	-- Update current hearts
+	playerData.stats.currentHearts = math.max(0, playerData.stats.currentHearts - damage)
+
+	-- Check for extra lives
+	if playerData.stats.currentHearts <= 0 and playerData.stats.extraLives > 0 then
+		playerData.stats.extraLives = playerData.stats.extraLives - 1
+		playerData.stats.currentHearts = 2 -- Revive with 1 heart
+		print("💀➡️💖 Used extra life! Lives remaining:", playerData.stats.extraLives)
+
+		-- Update the UI
+		self:ApplyStatsToCharacter(player)
+		return true -- Prevented death
+	end
+
+	-- Update the UI after damage
+	self:ApplyStatsToCharacter(player)
+	return false -- Normal damage
+end
+
+-- ========================================================================
 -- UTILITY FUNCTIONS
 -- ========================================================================
 
@@ -694,31 +889,39 @@ function ItemEffects:OnEnemyKilled(player, enemy)
 	end
 end
 
--- Called when player takes damage (some items trigger on damage)
-function ItemEffects:OnPlayerDamaged(player, damage)
-	local playerData = self:GetPlayerData(player)
-
-	-- Update current hearts
-	playerData.stats.currentHearts = math.max(0, playerData.stats.currentHearts - damage)
-
-	-- Check for extra lives
-	if playerData.stats.currentHearts <= 0 and playerData.stats.extraLives > 0 then
-		playerData.stats.extraLives = playerData.stats.extraLives - 1
-		playerData.stats.currentHearts = 2 -- Revive with 1 heart
-		print("💀➡️💖 Used extra life! Lives remaining:", playerData.stats.extraLives)
-		return true -- Prevented death
-	end
-
-	return false -- Normal damage
-end
-
 -- ========================================================================
--- CLEANUP
+-- CLEANUP & EVENT HANDLERS
 -- ========================================================================
 
 -- Clean up when players leave
 game.Players.PlayerRemoving:Connect(function(player)
 	ItemEffects:CleanupPlayer(player)
 end)
+
+-- Handle client requests for stats updates
+statsUpdateEvent.OnServerEvent:Connect(function(player)
+	if ItemEffects then
+		ItemEffects:SendStatsToClient(player)
+		print("📡 Client requested stats, sent to:", player.Name)
+	end
+end)
+
+-- Send stats when player spawns
+game.Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function()
+		task.wait(2) -- Wait for systems to load
+		if ItemEffects then
+			ItemEffects:SendStatsToClient(player)
+		end
+	end)
+end)
+
+print("✅ ItemEffects system loaded with complete health & stats integration!")
+print("📋 Features:")
+print("  💖 Dynamic heart system integration")
+print("  📊 Real-time stats communication to client")
+print("  🎮 Full item effect system")
+print("  🔄 Automatic health & stats updates")
+print("  📡 RemoteEvent communication")
 
 return ItemEffects
