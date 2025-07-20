@@ -94,7 +94,7 @@ function EnhancedBossManager.new()
 		end
 
 		print("📍 Room center:", roomCenter)
-		
+
 		-- Find the room floor height
 		local floorY = self:findRoomFloorHeight(roomModel)
 		if not floorY then
@@ -151,7 +151,7 @@ function EnhancedBossManager.new()
 		for _, poolName in pairs(config.pools) do
 			local pool = ItemDatabase.ItemPools[poolName] or {}
 			print("📋 Checking pool:", poolName, "- items:", #pool)
-			
+
 			for _, itemId in pairs(pool) do
 				local item = ItemDatabase:GetItem(itemId)
 				if item and item.unlocked then
@@ -166,7 +166,7 @@ function EnhancedBossManager.new()
 		if #availableItems == 0 then
 			warn("❌ No available items in pools:", table.concat(config.pools, ", "))
 			print("🔄 Falling back to all items...")
-			
+
 			-- Fallback: use any unlocked item
 			for itemId, item in pairs(ItemDatabase.Items) do
 				if item.unlocked then
@@ -298,22 +298,22 @@ function EnhancedBossManager.new()
 		if floor then
 			return floor.Position
 		end
-		
+
 		-- Fallback: calculate center from all parts
 		local totalPos = Vector3.new(0, 0, 0)
 		local partCount = 0
-		
+
 		for _, descendant in pairs(roomModel:GetDescendants()) do
 			if descendant:IsA("BasePart") then
 				totalPos = totalPos + descendant.Position
 				partCount = partCount + 1
 			end
 		end
-		
+
 		if partCount > 0 then
 			return totalPos / partCount
 		end
-		
+
 		-- Final fallback
 		return Vector3.new(0, 0, 0)
 	end
@@ -322,8 +322,8 @@ function EnhancedBossManager.new()
 		for _, child in pairs(roomModel:GetDescendants()) do
 			if child:IsA("BasePart") and (
 				string.lower(child.Name):find("floor") or
-				(child.Size.X >= 100 and child.Size.Z >= 70)
-			) then
+					(child.Size.X >= 100 and child.Size.Z >= 70)
+				) then
 				return child
 			end
 		end
