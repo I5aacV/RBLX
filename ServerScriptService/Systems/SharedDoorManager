@@ -704,6 +704,75 @@ function SharedDoorManager:checkForNewDoorOpenings()
 	end
 end
 
+-- Called when player enters a room - checks all connected doors
+function SharedDoorManager:onPlayerEnteredRoom(roomModel)
+	if not roomModel then return end
+
+	local roomName = roomModel.Name
+	print("🚪 PLAYER ENTERED ROOM:", roomName, "- Checking connected doors...")
+
+	-- Check if this room has enemies
+	local roomHasEnemies = self:roomHasEnemies(roomModel)
+	print("  👹 Room", roomName, "has enemies:", roomHasEnemies)
+
+	-- Find all doors connected to this room
+	local connectedDoors = {}
+	for doorKey, door in pairs(self.doors) do
+		local room1 = door:GetAttribute("Room1")
+		local room2 = door:GetAttribute("Room2")
+
+		if room1 == roomName or room2 == roomName then
+			table.insert(connectedDoors, {
+				door = door,
+				otherRoom = (room1 == roomName) and room2 or room1
+			})
+		end
+	end
+
+	print("  🔗 Found", #connectedDoors, "connected doors")
+
+	-- Re-evaluate each connected door
+	for _, doorInfo in pairs(connectedDoors) do
+		local door = doorInfo.door
+		local otherRoomName = doorInfo.otherRoom
+		local currentState = door:GetAttribute("State")
+
+		-- Get the other room model
+		local otherRoomModel = workspace:FindFirstChild(otherRoomName)
+		local otherRoomHasEnemies = false
+
+		if otherRoomModel then
+			otherRoomHasEnemies = self:roomHasEnemies(otherRoomModel)
+		end
+
+		print("    🚪 Door to", otherRoomName, ":")
+		print("      Current room enemies:", roomHasEnemies)
+		print("      Other room enemies:", otherRoomHasEnemies)
+		print("      Door state:", currentState)
+
+		-- Determine what the door state should be
+		local shouldBeLocked = roomHasEnemies or otherRoomHasEnemies
+
+		if shouldBeLocked and currentState ~= DoorState.LOCKED then
+			-- Should be locked but isn't
+			print("      🔒 LOCKING door (enemies present)")
+			door:SetAttribute("PreviousState", currentState)
+			self:setDoorState(door, DoorState.LOCKED)
+
+		elseif not shouldBeLocked and currentState == DoorState.LOCKED then
+			-- Should be unlocked but is locked
+			print("      🔓 UNLOCKING door (no enemies)")
+			local previousState = door:GetAttribute("PreviousState") or DoorState.CLOSED
+			self:setDoorState(door, previousState)
+			door:SetAttribute("PreviousState", nil)
+		else
+			print("      ✅ Door state correct")
+		end
+	end
+
+	print("🚪 Door re-evaluation complete for room:", roomName)
+end
+
 -- ========================================================================
 -- INITIALIZATION AND PUBLIC API
 -- ========================================================================
@@ -885,6 +954,55 @@ _G.CheckRoomEnemies = function(roomName)
 		print("❌ Room not found:", roomName)
 		return false
 	end
+end
+
+function SharedDoorManager:debugSpecificDoor(doorName)
+	local door = workspace:FindFirstChild("SharedDoors")
+	if door then
+		door = door:FindFirstChild(doorName)
+	end
+
+	if not door then
+		print("❌ Door not found:", doorName)
+		return
+	end
+
+	print("🔍 DOOR DEBUG:", door.Name)
+	print("  📍 Position:", door.Position)
+	print("  📏 Size:", door.Size)
+	print("  👻 Transparency:", door.Transparency)
+	print("  🧱 CanCollide:", door.CanCollide)
+	print("  🎨 Color:", door.Color)
+	print("  🏗️ Material:", door.Material.Name)
+	print("  📊 State Attribute:", door:GetAttribute("State"))
+	print("  🏠 Room1:", door:GetAttribute("Room1"))
+	print("  🏠 Room2:", door:GetAttribute("Room2"))
+
+	-- Check what the state SHOULD be
+	local room1Name = door:GetAttribute("Room1")
+	local room2Name = door:GetAttribute("Room2")
+
+	local room1Model = workspace:FindFirstChild(room1Name)
+	local room2Model = workspace:FindFirstChild(room2Name)
+
+	local room1HasEnemies = room1Model and self:roomHasEnemies(room1Model) or false
+	local room2HasEnemies = room2Model and self:roomHasEnemies(room2Model) or false
+
+	print("  🏠", room1Name, "has enemies:", room1HasEnemies)
+	print("  🏠", room2Name, "has enemies:", room2HasEnemies)
+
+	local shouldBeLocked = room1HasEnemies or room2HasEnemies
+	local correctState = shouldBeLocked and "locked" or "closed"
+
+	print("  ✅ Should be state:", correctState)
+	print("  🔧 Current state:", door:GetAttribute("State"))
+
+	if door:GetAttribute("State") ~= correctState then
+		print("  ⚠️ DOOR STATE IS WRONG! Fixing...")
+		self:setDoorState(door, correctState)
+	end
+
+	return door
 end
 
 print("")
