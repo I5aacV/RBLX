@@ -1,0 +1,794 @@
+-- CLEAN ISAAC SHOOTING SYSTEM - BUILT FROM SCRATCH
+-- Place this in StarterPlayerScripts
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+
+local player = Players.LocalPlayer
+local mouse = player:GetMouse()
+
+-- ATTACK SYSTEM CONFIGURATION (Easy to modify for different attacks)
+local ATTACK_CONFIGS = {
+	BasicTear = {
+		-- Damage and Speed
+		damage = 10,
+		speed = 40,           -- Studs per second (affects distance traveled)
+		fireRate = 0.25,      -- Seconds between shots
+		lifetime = 2.0,       -- How long orb exists (affects max distance)
+
+		-- Visual Properties (all configurable)
+		sizeX = 1,          -- Width of projectile
+		sizeY = 1,          -- Height of projectile  
+		sizeZ = 1,          -- Depth of projectile
+		colorR = 100,         -- Red component (0-255)
+		colorG = 150,         -- Green component (0-255)
+		colorB = 255,         -- Blue component (0-255)
+		material = Enum.Material.Neon,
+		transparency = 0.1,   -- 0 = opaque, 1 = invisible
+
+		-- Physics
+		gravity = -20,        -- Downward acceleration (affects arc)
+		spawnOffset = 2,      -- Distance from player when spawned
+		spawnHeight = 1.2,    -- Height above player
+
+		-- Effects
+		hasTrail = true,
+		hasGlow = true,
+		glowBrightness = 2,
+		glowRange = 10
+	}
+}
+
+-- CURRENT ATTACK (can be changed for different characters/powerups)
+local currentAttack = "BasicTear"
+
+-- INPUT CONFIGURATION
+local CONTROLS = {
+	-- Movement keys (for aiming only - don't interfere with character movement)
+	up = {Enum.KeyCode.W, Enum.KeyCode.Up},
+	down = {Enum.KeyCode.S, Enum.KeyCode.Down},
+	left = {Enum.KeyCode.A, Enum.KeyCode.Left},
+	right = {Enum.KeyCode.D, Enum.KeyCode.Right},
+
+	-- Shooting
+	shoot = Enum.UserInputType.MouseButton1
+}
+
+-- SHOOTING SYSTEM
+local ShootingSystem = {}
+ShootingSystem.__index = ShootingSystem
+
+function ShootingSystem.new()
+	local self = setmetatable({}, ShootingSystem)
+
+	-- System state
+	self.activeProjectiles = {}
+	self.lastShotTime = 0
+	self.aimDirection = Vector3.new(0, 0, -1)  -- Default: forward
+
+	-- Input tracking (for 8-directional aiming)
+	self.inputState = {
+		up = false,
+		down = false,
+		left = false,
+		right = false
+	}
+
+	-- Initialize
+	self:setupInput()
+	self:startProjectileLoop()
+
+	print("🎯 Clean Isaac Shooting System loaded!")
+	print("🎮 WASD/Arrows to aim (8 directions), Left Click to shoot")
+	print("⚡ Zero interference with player movement!")
+
+	return self
+end
+
+-- Setup input handling (aiming only - no character movement interference)
+function ShootingSystem:setupInput()
+	-- Key press detection
+	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+
+		-- Track directional keys for aiming
+		self:updateInputState(input.KeyCode, true)
+
+		-- Handle shooting
+		if input.UserInputType == CONTROLS.shoot then
+			self:shoot()
+		end
+	end)
+
+	-- Key release detection
+	UserInputService.InputEnded:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+
+		self:updateInputState(input.KeyCode, false)
+	end)
+end
+
+-- Update input state and calculate aim direction
+function ShootingSystem:updateInputState(keyCode, pressed)
+	-- Check if this key is mapped to a direction
+	for direction, keys in pairs(CONTROLS) do
+		if direction ~= "shoot" then
+			for _, mappedKey in pairs(keys) do
+				if keyCode == mappedKey then
+					self.inputState[direction] = pressed
+					self:calculateAimDirection()
+					return
+				end
+			end
+		end
+	end
+end
+
+-- Calculate 8-directional aim from input state
+function ShootingSystem:calculateAimDirection()
+	local x, z = 0, 0
+
+	-- Calculate direction vector from input
+	if self.inputState.up then z = z - 1 end
+	if self.inputState.down then z = z + 1 end
+	if self.inputState.left then x = x - 1 end
+	if self.inputState.right then x = x + 1 end
+
+	-- Update aim direction (only if there's input)
+	if x ~= 0 or z ~= 0 then
+		self.aimDirection = Vector3.new(x, 0, z).Unit
+	end
+end
+
+-- Shoot a projectile
+function ShootingSystem:shoot()
+	local config = ATTACK_CONFIGS[currentAttack]
+	if not config then return end
+
+	-- Check fire rate
+	local currentTime = tick()
+	if currentTime - self.lastShotTime < config.fireRate then
+		return
+	end
+
+	-- Get player position
+	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+
+	local humanoidRootPart = player.Character.HumanoidRootPart
+	local playerPos = humanoidRootPart.Position
+
+	-- Calculate spawn position (offset from player)
+	local spawnPos = playerPos + 
+		Vector3.new(0, config.spawnHeight, 0) + 
+		self.aimDirection * config.spawnOffset
+
+	-- Create projectile
+	local projectile = self:createProjectile(spawnPos, self.aimDirection, config)
+	table.insert(self.activeProjectiles, projectile)
+
+	-- Update fire rate timer
+	self.lastShotTime = currentTime
+
+	print("💙 Shot projectile in direction:", self:getDirectionName(self.aimDirection))
+end
+
+-- Create a projectile with the given configuration
+function ShootingSystem:createProjectile(position, direction, config)
+	print("🔨 Creating projectile at position:", position)
+	print("🔨 Direction:", direction)
+
+	-- Create visual projectile
+	local projectilePart = Instance.new("Part")
+	projectilePart.Name = "Projectile_" .. currentAttack
+	projectilePart.Size = Vector3.new(config.sizeX, config.sizeY, config.sizeZ)
+	projectilePart.Color = Color3.fromRGB(config.colorR, config.colorG, config.colorB)
+	projectilePart.Material = config.material
+	projectilePart.Transparency = config.transparency
+	projectilePart.Shape = Enum.PartType.Ball
+	projectilePart.CanCollide = true   -- FIXED: Need this for Touched events
+	projectilePart.Anchored = false    -- FIXED: Use BodyVelocity instead
+	projectilePart.Position = position
+	projectilePart.Parent = workspace
+
+	-- Create BodyVelocity for smooth movement without collision interference
+	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
+	bodyVelocity.Velocity = direction * config.speed
+	bodyVelocity.Parent = projectilePart
+
+	-- Create BodyPosition to prevent physics interference with player
+	local bodyPosition = Instance.new("BodyPosition")
+	bodyPosition.MaxForce = Vector3.new(0, 4000, 0)  -- Only affect Y axis for gravity
+	bodyPosition.Position = position
+	bodyPosition.P = 3000
+	bodyPosition.D = 500
+	bodyPosition.Parent = projectilePart
+
+	print("🔨 Projectile created with properties:")
+	print("   Name:", projectilePart.Name)
+	print("   Size:", projectilePart.Size)
+	print("   CanCollide:", projectilePart.CanCollide)
+	print("   Anchored:", projectilePart.Anchored)
+	print("   Parent:", projectilePart.Parent and projectilePart.Parent.Name or "No parent")
+
+	-- Add visual effects
+	if config.hasGlow then
+		local pointLight = Instance.new("PointLight")
+		pointLight.Color = Color3.fromRGB(config.colorR, config.colorG, config.colorB)
+		pointLight.Brightness = config.glowBrightness
+		pointLight.Range = config.glowRange
+		pointLight.Parent = projectilePart
+	end
+
+	if config.hasTrail then
+		local attachment = Instance.new("Attachment")
+		attachment.Parent = projectilePart
+
+		local trail = Instance.new("Trail")
+		trail.Attachment0 = attachment
+		trail.Attachment1 = attachment
+		trail.Color = ColorSequence.new(Color3.fromRGB(config.colorR, config.colorG, config.colorB))
+		trail.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.3),
+			NumberSequenceKeypoint.new(1, 1)
+		})
+		trail.Lifetime = 0.5
+		trail.MinLength = 0
+		trail.Parent = projectilePart
+	end
+
+	-- Projectile data
+	local projectileData = {
+		part = projectilePart,
+		bodyVelocity = bodyVelocity,
+		bodyPosition = bodyPosition,
+		config = config,
+
+		-- Physics
+		initialDirection = direction,
+		currentVelocity = direction * config.speed,
+
+		-- Metadata
+		startTime = tick(),
+		damage = config.damage,
+		hasHit = false
+	}
+
+	-- Setup hit detection
+	self:setupHitDetection(projectileData)
+
+	return projectileData
+end
+
+-- Setup hit detection for projectile
+function ShootingSystem:setupHitDetection(projectileData)
+	local part = projectileData.part
+
+	print("🔗 Setting up hit detection for:", part.Name)
+
+	-- Use Touched event for simple, reliable hit detection
+	local connection = part.Touched:Connect(function(hitPart)
+		print("💥 ORB TOUCHED SOMETHING:", hitPart.Name, "(" .. hitPart.ClassName .. ")")
+
+		-- Prevent multiple hits
+		if projectileData.hasHit then 
+			print("🚫 Already hit something, ignoring")
+			return 
+		end
+
+		-- Don't hit the player who shot it
+		if player.Character then
+			for _, playerPart in pairs(player.Character:GetDescendants()) do
+				if playerPart == hitPart then 
+					print("🚫 Ignoring hit on player part:", hitPart.Name)
+					return 
+				end
+			end
+		end
+
+		-- Don't hit other projectiles
+		if string.find(hitPart.Name, "Projectile_") then 
+			print("🚫 Ignoring hit on other projectile:", hitPart.Name)
+			return 
+		end
+
+		-- Check for enemy hit
+		if self:isEnemy(hitPart) then
+			print("🎯 ENEMY HIT CONFIRMED! Processing damage...")
+			projectileData.hasHit = true
+			self:handleEnemyHit(hitPart, projectileData)
+			return
+		end
+
+		-- Check for solid obstacles
+		if self:isSolidObstacle(hitPart) then
+			print("🧱 OBSTACLE HIT:", hitPart.Name)
+			projectileData.hasHit = true
+			self:handleObstacleHit(hitPart, projectileData)
+			return
+		end
+
+		print("👻 Hit something else (ignoring):", hitPart.Name)
+	end)
+
+	print("🔗 Hit detection connected for:", part.Name)
+
+	-- Store connection for cleanup
+	projectileData.hitConnection = connection
+end
+
+-- Check if part belongs to an enemy
+function ShootingSystem:isEnemy(part)
+	-- Debug what we're checking
+	print("🔍 Checking if enemy:", part.Name, "(" .. part.ClassName .. ")")
+
+	-- Check if part or its parent has enemy tag
+	if CollectionService:HasTag(part, "RoomEnemy") then
+		print("✅ Part itself has RoomEnemy tag")
+		return true
+	end
+	if part.Parent and CollectionService:HasTag(part.Parent, "RoomEnemy") then
+		print("✅ Parent has RoomEnemy tag")
+		return true
+	end
+
+	-- Check for any enemy-related tags (debug)
+	local tags = CollectionService:GetTags(part)
+	local parentTags = part.Parent and CollectionService:GetTags(part.Parent) or {}
+
+	print("🏷️ Part tags:", table.concat(tags, ", "))
+	if part.Parent then
+		print("🏷️ Parent tags:", table.concat(parentTags, ", "))
+	end
+
+	-- Look for common enemy indicators
+	if string.find(string.lower(part.Name), "enemy") or 
+		string.find(string.lower(part.Name), "fly") or
+		string.find(string.lower(part.Name), "spider") or
+		string.find(string.lower(part.Name), "gaper") then
+		print("✅ Found enemy by name pattern")
+		return true
+	end
+
+	if part.Parent then
+		local parentName = string.lower(part.Parent.Name)
+		if string.find(parentName, "enemy") or 
+			string.find(parentName, "fly") or
+			string.find(parentName, "spider") or
+			string.find(parentName, "gaper") then
+			print("✅ Found enemy by parent name pattern")
+			return true
+		end
+	end
+
+	print("❌ Not recognized as enemy")
+	return false
+end
+
+-- Check if part is a solid obstacle
+function ShootingSystem:isSolidObstacle(part)
+	-- Check for tagged obstacles
+	if CollectionService:HasTag(part, "RoomWall") or
+		CollectionService:HasTag(part, "RoomObstacle") or
+		CollectionService:HasTag(part, "DamageSpike") then
+		return true
+	end
+
+	-- Check for solid parts (basic collision)
+	if part.CanCollide and part.Transparency < 0.8 and part.Size.Magnitude > 2 then
+		return true
+	end
+
+	return false
+end
+
+-- REPLACE THIS FUNCTION: handleEnemyHit
+function ShootingSystem:handleEnemyHit(hitPart, projectileData)
+	print("🎯 Processing enemy hit on:", hitPart.Name)
+
+	-- Find the enemy model (improved hierarchy search)
+	local enemy = nil
+	local searchPart = hitPart
+
+	-- Search up the hierarchy for enemy tag
+	while searchPart and searchPart ~= workspace do
+		if CollectionService:HasTag(searchPart, "RoomEnemy") then
+			enemy = searchPart
+			print("✅ Found enemy via tag:", enemy.Name)
+			break
+		end
+		searchPart = searchPart.Parent
+	end
+
+	-- Fallback: Check if hit part itself or parent has enemy name patterns
+	if not enemy then
+		if self:hasEnemyNamePattern(hitPart) then
+			enemy = hitPart
+		elseif hitPart.Parent and self:hasEnemyNamePattern(hitPart.Parent) then
+			enemy = hitPart.Parent
+		end
+	end
+
+	if not enemy then
+		print("❌ No enemy found for hit part:", hitPart.Name)
+		return
+	end
+
+	-- Find Humanoid in the enemy
+	local humanoid = enemy:FindFirstChild("Humanoid")
+	if not humanoid then
+		humanoid = enemy:FindFirstChildOfClass("Humanoid")
+		if not humanoid then
+			print("❌ No Humanoid found in enemy:", enemy.Name)
+			return
+		end
+	end
+
+	-- Check if enemy is already dead
+	if humanoid.Health <= 0 then
+		print("💀 Enemy already dead, ignoring hit")
+		return
+	end
+
+	-- IMPROVED DAMAGE DEALING: More reliable death triggering
+	local oldHealth = humanoid.Health
+	local damage = projectileData.damage
+	local newHealth = math.max(0, oldHealth - damage)
+
+	print("💥 Dealing damage to", enemy.Name)
+	print("  💖 Health before:", oldHealth)
+	print("  ⚔️ Damage:", damage)
+	print("  💖 Health after:", newHealth)
+
+	-- Set the new health
+	humanoid.Health = newHealth
+
+	-- CRITICAL FIX: Ensure death event fires properly
+	if newHealth <= 0 and oldHealth > 0 then
+		print("💀 Enemy should die! Ensuring death event fires...")
+
+		-- Wait a tiny bit for natural death event
+		task.wait(0.05)
+
+		-- If enemy still isn't marked as dying, force it
+		if not enemy:GetAttribute("DeathProcessed") then
+			print("🔥 Forcing death event for:", enemy.Name)
+			-- Set health to exactly 0 to trigger Died event
+			humanoid.Health = 0
+
+			-- If that doesn't work, we'll rely on the backup health monitoring
+			-- in the enemy spawner system
+		end
+	end
+
+	-- Create visual feedback
+	self:createHitEffect(projectileData.part.Position, "enemy")
+	self:createDamageNumber(enemy, damage)
+
+	print("✅ Hit processing complete for:", enemy.Name)
+end
+
+-- ADD THIS HELPER FUNCTION: hasEnemyNamePattern
+function ShootingSystem:hasEnemyNamePattern(part)
+	if not part or not part.Name then return false end
+
+	local name = string.lower(part.Name)
+	local enemyPatterns = {"enemy", "fly", "spider", "gaper", "monster", "mob"}
+
+	for _, pattern in pairs(enemyPatterns) do
+		if string.find(name, pattern) then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Handle obstacle hit
+function ShootingSystem:handleObstacleHit(hitPart, projectileData)
+	-- Create hit effect
+	self:createHitEffect(projectileData.part.Position, "wall")
+
+
+	print("💨 Hit obstacle")
+end
+
+-- Create floating damage number
+-- Create floating damage number
+function ShootingSystem:createDamageNumber(enemy, damage)
+	-- Find a good position above the enemy
+	local enemyPosition = nil
+
+	-- Try different ways to get the enemy position
+	if enemy:FindFirstChild("HumanoidRootPart") then
+		enemyPosition = enemy.HumanoidRootPart.Position
+		print("📍 Using HumanoidRootPart position")
+	elseif enemy:FindFirstChild("Torso") then
+		enemyPosition = enemy.Torso.Position
+		print("📍 Using Torso position")
+	elseif enemy:FindFirstChild("UpperTorso") then
+		enemyPosition = enemy.UpperTorso.Position
+		print("📍 Using UpperTorso position")
+	elseif enemy.PrimaryPart then
+		enemyPosition = enemy.PrimaryPart.Position
+		print("📍 Using PrimaryPart position")
+	else
+		-- Find any Part in the enemy model
+		for _, child in pairs(enemy:GetChildren()) do
+			if child:IsA("BasePart") then
+				enemyPosition = child.Position
+				print("📍 Using first BasePart position:", child.Name)
+				break
+			end
+		end
+	end
+
+	-- If we still can't find a position, use a default
+	if not enemyPosition then
+		print("❌ Could not find enemy position! Using default.")
+		enemyPosition = Vector3.new(0, 0, 0)
+	end
+
+	-- Create the damage number GUI
+	local damageGui = Instance.new("BillboardGui")
+	damageGui.Name = "DamageNumber"
+	damageGui.Size = UDim2.new(0, 100, 0, 50)
+	damageGui.StudsOffset = Vector3.new(0, 3, 0)
+	damageGui.Adornee = enemy
+	damageGui.Parent = workspace
+
+	-- Create the text label
+	local damageLabel = Instance.new("TextLabel")
+	damageLabel.Name = "DamageText"
+	damageLabel.Size = UDim2.new(1, 0, 1, 0)
+	damageLabel.BackgroundTransparency = 1
+	damageLabel.Text = "-" .. tostring(damage)
+	damageLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	damageLabel.TextScaled = true
+	damageLabel.TextStrokeTransparency = 0
+	damageLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	damageLabel.Font = Enum.Font.SourceSansBold
+	damageLabel.Parent = damageGui
+
+	-- Animate the damage number
+	local TweenService = game:GetService("TweenService")
+	local Debris = game:GetService("Debris")
+
+	-- Float up and fade out
+	local tweenInfo = TweenInfo.new(
+		1.5,  -- Duration
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out,
+		0,    -- Repeat count
+		false -- Reverse
+	)
+
+	local tween = TweenService:Create(damageGui, tweenInfo, {
+		StudsOffset = Vector3.new(0, 6, 0)
+	})
+
+	local fadeTween = TweenService:Create(damageLabel, tweenInfo, {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1
+	})
+
+	-- Start animations
+	tween:Play()
+	fadeTween:Play()
+
+	-- Clean up after animation
+	Debris:AddItem(damageGui, 1.5)
+
+	print("📊 Created damage number:", damage, "at position:", enemyPosition)
+end
+
+-- Create visual hit effect
+function ShootingSystem:createHitEffect(position, hitType)
+	local effect = Instance.new("Part")
+	effect.Name = "HitEffect"
+	effect.Size = Vector3.new(1.5, 1.5, 1.5)
+	effect.Shape = Enum.PartType.Ball
+	effect.Material = Enum.Material.Neon
+	effect.CanCollide = false
+	effect.Anchored = true
+	effect.Position = position
+
+	-- Color based on hit type
+	if hitType == "enemy" then
+		effect.Color = Color3.fromRGB(255, 100, 100)  -- Red
+	else
+		effect.Color = Color3.fromRGB(200, 200, 200)  -- Gray
+	end
+
+	effect.Parent = workspace
+
+	-- Animate and destroy
+	game:GetService("TweenService"):Create(effect,
+		TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{Size = Vector3.new(0.1, 0.1, 0.1), Transparency = 1}
+	):Play()
+
+	game:GetService("Debris"):AddItem(effect, 0.3)
+end
+
+-- Update all active projectiles
+function ShootingSystem:startProjectileLoop()
+	RunService.Heartbeat:Connect(function(deltaTime)
+		for i = #self.activeProjectiles, 1, -1 do
+			local projectile = self.activeProjectiles[i]
+
+			-- Check if projectile should be destroyed
+			if self:shouldDestroyProjectile(projectile) then
+				self:destroyProjectile(i)
+				continue
+			end
+
+			-- Update projectile physics
+			self:updateProjectilePhysics(projectile, deltaTime)
+		end
+	end)
+end
+
+-- Check if projectile should be destroyed
+function ShootingSystem:shouldDestroyProjectile(projectile)
+	-- Check lifetime
+	if tick() - projectile.startTime > projectile.config.lifetime then
+		return true
+	end
+
+	-- Check if hit something
+	if projectile.hasHit then
+		return true
+	end
+
+	-- Check if part was destroyed
+	if not projectile.part.Parent then
+		return true
+	end
+
+	-- Check if too far below ground
+	if projectile.part.Position.Y < -100 then
+		return true
+	end
+
+	return false
+end
+
+-- Update projectile physics
+function ShootingSystem:updateProjectilePhysics(projectile, deltaTime)
+	-- Apply gravity to the BodyVelocity
+	local currentVelocity = projectile.bodyVelocity.Velocity
+	local newVelocity = Vector3.new(
+		currentVelocity.X,
+		currentVelocity.Y + projectile.config.gravity * deltaTime,
+		currentVelocity.Z
+	)
+
+	projectile.bodyVelocity.Velocity = newVelocity
+
+	-- Debug: Show projectile movement occasionally
+	if math.random() < 0.1 then  -- 10% chance to show position
+		print("🚀 Projectile at:", projectile.part.Position, "Velocity:", newVelocity)
+	end
+end
+
+-- Destroy projectile and clean up
+function ShootingSystem:destroyProjectile(index)
+	local projectile = self.activeProjectiles[index]
+
+	if projectile then
+		-- Disconnect hit detection
+		if projectile.hitConnection then
+			projectile.hitConnection:Disconnect()
+		end
+
+		-- Clean up physics objects
+		if projectile.bodyVelocity then
+			projectile.bodyVelocity:Destroy()
+		end
+		if projectile.bodyPosition then
+			projectile.bodyPosition:Destroy()
+		end
+
+		-- Destroy visual part
+		if projectile.part and projectile.part.Parent then
+			projectile.part:Destroy()
+		end
+	end
+
+	-- Remove from active list
+	table.remove(self.activeProjectiles, index)
+end
+
+-- Get direction name for debugging
+function ShootingSystem:getDirectionName(direction)
+	local x, z = direction.X, direction.Z
+	local threshold = 0.1
+
+	if math.abs(x) < threshold and z < -threshold then return "North"
+	elseif math.abs(x) < threshold and z > threshold then return "South"
+	elseif x < -threshold and math.abs(z) < threshold then return "West"
+	elseif x > threshold and math.abs(z) < threshold then return "East"
+	elseif x < -threshold and z < -threshold then return "Northwest"
+	elseif x > threshold and z < -threshold then return "Northeast"
+	elseif x < -threshold and z > threshold then return "Southwest"
+	elseif x > threshold and z > threshold then return "Southeast"
+	else return "Center"
+	end
+end
+
+-- PUBLIC API for changing attacks (future expansion)
+function ShootingSystem:setAttack(attackName)
+	if ATTACK_CONFIGS[attackName] then
+		currentAttack = attackName
+		print("🔄 Attack changed to:", attackName)
+		return true
+	else
+		print("❌ Attack not found:", attackName)
+		return false
+	end
+end
+
+function ShootingSystem:getCurrentAttack()
+	return currentAttack
+end
+
+function ShootingSystem:getAttackConfig(attackName)
+	return ATTACK_CONFIGS[attackName or currentAttack]
+end
+
+-- Initialize the system
+local shootingSystem = ShootingSystem.new()
+
+-- Export for external use
+_G.ShootingSystem = shootingSystem
+
+print("🎯 Clean Isaac Shooting System ready!")
+print("⚙️ Modular design - easy to add new attacks!")
+print("🎮 Zero interference with player movement!")
+
+--[[
+🎯 CLEAN ISAAC SHOOTING SYSTEM - FEATURES
+
+✅ ZERO MOVEMENT INTERFERENCE:
+- No character rotation manipulation
+- No CFrame changes to player
+- Purely projectile-based system
+- Input tracking only for aim direction
+
+✅ MODULAR ATTACK SYSTEM:
+- Easy to add new attack types
+- Configurable damage, speed, fire rate
+- Visual properties (size, color, effects)
+- Physics properties (gravity, lifetime)
+
+✅ SIMPLE PHYSICS:
+- Speed affects distance (speed × lifetime = range)
+- Gravity creates natural arc
+- No complex collision systems
+- Clean projectile lifecycle
+
+✅ 8-DIRECTIONAL AIMING:
+- WASD/Arrow keys for direction
+- Diagonal combinations (W+A = NW)
+- No character facing changes
+- Pure aim direction calculation
+
+✅ RELIABLE HIT DETECTION:
+- Touched events (simple and fast)
+- Enemy and obstacle detection
+- Hit effects and feedback
+- Proper cleanup
+
+✅ FUTURE-READY:
+- shootingSystem:setAttack("NewAttack")
+- Easy to add character-specific attacks
+- Configurable everything
+- Clean API for expansions
+
+🎮 Perfect foundation for Isaac-style combat!
+--]]
