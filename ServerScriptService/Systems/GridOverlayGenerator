@@ -1,0 +1,1213 @@
+-- ======================================================================== 
+-- COMPLETE FIXED GRID OVERLAY ASSET PLACEMENT SYSTEM
+-- Replace your entire Grid Overlay script with this
+-- ======================================================================== 
+
+-- ======================================================================== 
+-- SECTION 1: SERVICES AND CONFIGURATION
+-- ======================================================================== 
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+-- Configuration Constants
+local CONFIG = {
+	-- Grid Configuration (Updated for 13x9 rectangular cells)
+	GRID_CELL_SIZE_X = 120 / 13, -- ~9.23 studs per cell width
+	GRID_CELL_SIZE_Z = 80 / 9, -- ~8.89 studs per cell height
+	ROOM_WIDTH = 120, -- Room floor width
+	ROOM_HEIGHT = 80, -- Room floor height
+	GRID_WIDTH = 13, -- 13 cells wide (length)
+	GRID_HEIGHT = 9, -- 9 cells tall (width)
+
+	-- Room spacing for connection detection
+	ROOM_SPACING = 124, -- 120 room width + 4 spacing = 124 studs
+	ROOM_DEPTH_SPACING = 84, -- 80 room depth + 4 spacing = 84 studs
+
+	-- Wall Configuration
+	WALL_HEIGHT = 10, -- Height of walls in studs
+	WALL_THICKNESS = 2, -- Thickness of walls in studs
+	DOOR_WIDTH = 12, -- Width of door openings
+	DOOR_HEIGHT = 10, -- Height of door openings
+}
+
+-- Room Types
+local RoomTypes = {
+	SPAWN = "Spawn",
+	NORMAL = "Normal",
+	BOSS = "Boss",
+	TREASURE = "Treasure",
+	SHOP = "Shop"
+}
+
+-- Grid Cell Types
+local CellTypes = {
+	EMPTY = "Empty", -- Player can move freely
+	ROCK = "Rock", -- Blocks player movement
+	SPIKE = "Spike", -- Allows movement but damages player
+	PIT = "Pit", -- Blocks player movement (deadly)
+	PROTECTED_EMPTY = "ProtectedEmpty" -- NEVER gets overridden by patterns
+}
+
+-- Asset Density Levels
+local DensityLevels = {
+	CLEAN = {name = "Clean", fillPercentage = 0.15, description = "Spacious, minimal obstacles"},
+	BALANCED = {name = "Balanced", fillPercentage = 0.35, description = "Moderate challenge"},
+	DENSE = {name = "Dense", fillPercentage = 0.55, description = "High challenge navigation"}
+}
+
+-- ======================================================================== 
+-- SECTION 2: ROOM CONTENT CONFIGURATION
+-- ======================================================================== 
+
+local RoomContentConfig = {
+	[RoomTypes.SPAWN] = {
+		rockProbability = 0.0, -- No rocks
+		spikeProbability = 0.0, -- No spikes
+		pitProbability = 0.0, -- No pits
+		minClearPath = 3, -- Wide clear paths
+		usePatterns = false, -- No patterns
+		useAssets = false, -- 🚫 NO ASSETS IN SPAWN ROOM
+		densityLevel = DensityLevels.CLEAN,
+		description = "Safe starting area - no obstacles"
+	},
+	[RoomTypes.SHOP] = {
+		rockProbability = 0.0, -- No rocks
+		spikeProbability = 0.0, -- No spikes
+		pitProbability = 0.0, -- No pits
+		minClearPath = 3, -- Easy navigation
+		usePatterns = false, -- No patterns
+		useAssets = false, -- 🚫 NO ASSETS IN SHOP ROOM
+		densityLevel = DensityLevels.CLEAN,
+		description = "Clean shopping area - no obstacles"
+	},
+	[RoomTypes.BOSS] = {
+		rockProbability = 0.0, -- No rocks (boss adds its own)
+		spikeProbability = 0.0, -- No spikes
+		pitProbability = 0.0, -- No pits
+		minClearPath = 3, -- Open arena
+		usePatterns = false, -- No patterns
+		useAssets = false, -- 🚫 NO ASSETS IN BOSS ROOM
+		densityLevel = DensityLevels.CLEAN,
+		description = "Open boss arena - boss controls obstacles"
+	},
+	[RoomTypes.NORMAL] = {
+		rockProbability = 0.12, -- Reduced base probability (patterns handle most)
+		spikeProbability = 0.08, -- Reduced base probability
+		pitProbability = 0.03, -- Much lower - pits come from clusters only
+		minClearPath = 2, -- Medium clear paths
+		usePatterns = true, -- ✅ Use Isaac-style patterns
+		useAssets = true, -- ✅ FULL ASSET SYSTEM
+		patternChance = 0.75, -- 75% chance for organized patterns
+		densityLevel = DensityLevels.BALANCED,
+		clusterGeneration = true, -- Use cluster-based random generation
+		description = "Balanced challenge with organized obstacles"
+	},
+	[RoomTypes.TREASURE] = {
+		rockProbability = 0.15, -- Some rocks for cover
+		spikeProbability = 0.20, -- Higher spike danger
+		pitProbability = 0.05, -- Strategic pit clusters
+		minClearPath = 1, -- Narrow paths for challenge
+		usePatterns = true, -- ✅ Use challenging patterns
+		useAssets = false, -- ✅ FULL ASSET SYSTEM
+		patternChance = 0.85, -- 85% chance for patterns (more organized)
+		densityLevel = DensityLevels.DENSE,
+		clusterGeneration = true, -- Strategic cluster placement
+		description = "High challenge obstacle course to treasure"
+	}
+}
+
+-- ======================================================================== 
+-- SECTION 3: PATTERN DEFINITIONS
+-- ======================================================================== 
+
+local CleanPatterns = {
+	TWIN_FORTRESSES = {
+		name = "Twin Fortresses",
+		description = "Symmetrical defensive positions on left and right",
+		requiredConnections = {},
+		incompatibleConnections = {},
+		apply = function(grid, connections)
+			local centerY = math.floor(CONFIG.GRID_HEIGHT / 2)
+			-- Left fortress
+			for dx = 0, 2 do
+				for dy = -1, 1 do
+					safePlace(grid, 3 + dx, centerY + dy, CellTypes.ROCK)
+				end
+			end
+			-- Right fortress (mirrored)
+			for dx = 0, 2 do
+				for dy = -1, 1 do
+					safePlace(grid, CONFIG.GRID_WIDTH - 2 - dx, centerY + dy, CellTypes.ROCK)
+				end
+			end
+			-- Central spike line
+			for x = 6, 8 do
+				safePlace(grid, x, centerY, CellTypes.SPIKE)
+			end
+		end
+	}
+}
+
+-- ======================================================================== 
+-- SECTION 4: UTILITY FUNCTIONS
+-- ======================================================================== 
+
+-- UTILITY: Safe grid placement with bounds checking
+local function safePlace(grid, x, y, cellType)
+	if x >= 1 and x <= CONFIG.GRID_WIDTH and y >= 1 and y <= CONFIG.GRID_HEIGHT then
+		if grid[x] and grid[x][y] ~= CellTypes.PROTECTED_EMPTY then
+			grid[x][y] = cellType
+			return true
+		end
+	end
+	return false
+end
+
+-- UTILITY: Safe grid assignment with bounds checking
+local function safeAssign(grid, x, y, cellType)
+	if x >= 1 and x <= CONFIG.GRID_WIDTH and y >= 1 and y <= CONFIG.GRID_HEIGHT then
+		if grid[x] then
+			grid[x][y] = cellType
+			return true
+		end
+	end
+	return false
+end
+
+-- ======================================================================== 
+-- SECTION 5: GRID OVERLAY GENERATOR CLASS
+-- ======================================================================== 
+
+local GridOverlayGenerator = {}
+GridOverlayGenerator.__index = GridOverlayGenerator
+
+function GridOverlayGenerator.new()
+	local self = setmetatable({}, GridOverlayGenerator)
+	self.assetLibrary = {}
+	self.activeOverlays = {}
+	self:loadAssetLibrary()
+	return self
+end
+
+-- ======================================================================== 
+-- SECTION 6: ASSET MANAGEMENT FUNCTIONS
+-- ======================================================================== 
+
+-- ASSET MANAGEMENT: Load asset library from workspace and folders
+function GridOverlayGenerator:loadAssetLibrary()
+	print("🎨 Loading expanded grid asset library...")
+
+	-- Initialize asset library with categories
+	self.assetLibrary = {
+		-- Traditional categories (backward compatibility)
+		Rock = {},
+		Spike = {},
+		Pit = {},
+
+		-- Expanded categories
+		Obstacles = {},
+		Hazards = {},
+		Pits = {},
+		Interactive = {},
+		Decorative = {},
+		Collectibles = {},
+		Special = {}
+	}
+
+	-- Load from organized folders in ReplicatedStorage
+	local gridAssetsFolder = ReplicatedStorage:FindFirstChild("GridAssets")
+	if gridAssetsFolder then
+		self:loadAssetsFromExpandedFolders(gridAssetsFolder)
+	else
+		print("📁 GridAssets folder not found, checking workspace...")
+	end
+
+	-- Fallback: Load from workspace and categorize automatically
+	self:loadFromWorkspaceWithCategorization()
+
+	-- Report loaded assets
+	self:reportAssetLibrary()
+
+	-- Verify critical assets
+	self:verifyCriticalAssets()
+end
+
+-- Load from expanded folder structure
+function GridOverlayGenerator:loadAssetsFromExpandedFolders(parentFolder)
+	print("📂 Loading from expanded grid asset folders...")
+
+	local function scanAssetCategory(categoryFolder, categoryName)
+		print("  📂 Scanning category:", categoryName)
+
+		local function scanSubfolder(folder, depth)
+			depth = depth or 1
+			local indent = string.rep("    ", depth)
+
+			for _, child in pairs(folder:GetChildren()) do
+				if child:IsA("Model") and string.find(child.Name, "GridAsset_") then
+					-- Extract asset info
+					local assetName = child.Name:gsub("GridAsset_", "")
+					local assetType = self:determineAssetType(assetName, categoryName)
+
+					-- Store in appropriate category
+					if not self.assetLibrary[categoryName] then
+						self.assetLibrary[categoryName] = {}
+					end
+					table.insert(self.assetLibrary[categoryName], child)
+
+					-- Also store in specific type for backward compatibility
+					if not self.assetLibrary[assetType] then
+						self.assetLibrary[assetType] = {}
+					end
+					table.insert(self.assetLibrary[assetType], child)
+
+					print(indent .. "✅ Loaded:", assetName, "→", categoryName, "/", assetType)
+
+				elseif child:IsA("Folder") then
+					-- Recursively scan subfolders
+					scanSubfolder(child, depth + 1)
+				end
+			end
+		end
+
+		scanSubfolder(categoryFolder)
+	end
+
+	-- Scan each main category folder
+	local categories = {"Obstacles", "Hazards", "Pits", "Interactive", "Decorative", "Collectibles", "Special"}
+	for _, category in pairs(categories) do
+		local categoryFolder = parentFolder:FindFirstChild(category)
+		if categoryFolder then
+			scanAssetCategory(categoryFolder, category)
+		end
+	end
+end
+
+-- Determine specific asset type from name and category
+function GridOverlayGenerator:determineAssetType(assetName, categoryName)
+	local lowerName = string.lower(assetName)
+
+	-- Map specific types for backward compatibility
+	if string.find(lowerName, "rock") then return "Rock"
+	elseif string.find(lowerName, "spike") then return "Spike"
+	elseif string.find(lowerName, "pit") or string.find(lowerName, "hole") then return "Pit"
+	elseif string.find(lowerName, "fire") then return "Fire"
+	elseif string.find(lowerName, "water") then return "Water"
+	elseif string.find(lowerName, "lava") then return "Lava"
+	elseif string.find(lowerName, "wall") then return "Wall"
+	elseif string.find(lowerName, "pillar") then return "Pillar"
+	elseif string.find(lowerName, "switch") then return "Switch"
+	elseif string.find(lowerName, "door") then return "Door"
+	elseif string.find(lowerName, "altar") then return "Altar"
+	elseif string.find(lowerName, "coin") then return "Coin"
+	elseif string.find(lowerName, "heart") then return "Heart"
+	elseif string.find(lowerName, "bomb") then return "Bomb"
+	elseif string.find(lowerName, "key") then return "Key"
+	else
+		-- Default to category name if no specific type found
+		return categoryName
+	end
+end
+
+-- Load from workspace with smart categorization
+function GridOverlayGenerator:loadFromWorkspaceWithCategorization()
+	print("🔄 Scanning workspace for grid assets...")
+
+	local workspaceAssets = 0
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and string.find(obj.Name, "GridAsset_") then
+			local assetName = obj.Name:gsub("GridAsset_", "")
+			local category = self:categorizeAssetByName(assetName)
+			local assetType = self:determineAssetType(assetName, category)
+
+			-- Store in category
+			if not self.assetLibrary[category] then
+				self.assetLibrary[category] = {}
+			end
+			table.insert(self.assetLibrary[category], obj)
+
+			-- Store in specific type
+			if not self.assetLibrary[assetType] then
+				self.assetLibrary[assetType] = {}
+			end
+			table.insert(self.assetLibrary[assetType], obj)
+
+			-- Move to ReplicatedStorage for organization
+			obj.Parent = ReplicatedStorage
+			workspaceAssets = workspaceAssets + 1
+
+			print("📦 Categorized and moved:", assetName, "→", category, "/", assetType)
+		end
+	end
+
+	if workspaceAssets > 0 then
+		print("🔄 Auto-categorized", workspaceAssets, "assets from workspace")
+	end
+end
+
+-- Smart categorization by asset name
+function GridOverlayGenerator:categorizeAssetByName(assetName)
+	local lowerName = string.lower(assetName)
+
+	-- Categorize by keywords
+	if string.find(lowerName, "rock") or string.find(lowerName, "wall") or 
+		string.find(lowerName, "pillar") or string.find(lowerName, "barrier") then
+		return "Obstacles"
+
+	elseif string.find(lowerName, "spike") or string.find(lowerName, "fire") or 
+		string.find(lowerName, "acid") or string.find(lowerName, "lightning") then
+		return "Hazards"
+
+	elseif string.find(lowerName, "pit") or string.find(lowerName, "hole") or 
+		string.find(lowerName, "water") or string.find(lowerName, "lava") then
+		return "Pits"
+
+	elseif string.find(lowerName, "switch") or string.find(lowerName, "door") or 
+		string.find(lowerName, "teleporter") or string.find(lowerName, "altar") then
+		return "Interactive"
+
+	elseif string.find(lowerName, "coin") or string.find(lowerName, "heart") or 
+		string.find(lowerName, "bomb") or string.find(lowerName, "key") then
+		return "Collectibles"
+
+	elseif string.find(lowerName, "boss") or string.find(lowerName, "treasure") or 
+		string.find(lowerName, "shop") or string.find(lowerName, "secret") then
+		return "Special"
+
+	else
+		return "Decorative" -- Default category
+	end
+end
+
+-- Report loaded asset library
+function GridOverlayGenerator:reportAssetLibrary()
+	print("📊 GRID ASSET LIBRARY REPORT:")
+
+	local totalAssets = 0
+	local categories = {"Obstacles", "Hazards", "Pits", "Interactive", "Decorative", "Collectibles", "Special"}
+
+	for _, category in pairs(categories) do
+		local count = self.assetLibrary[category] and #self.assetLibrary[category] or 0
+		if count > 0 then
+			print("  📂", category .. ":", count, "assets")
+			totalAssets = totalAssets + count
+		end
+	end
+
+	-- Show backward compatibility assets
+	local compatAssets = {"Rock", "Spike", "Pit"}
+	print("  🔧 Backward Compatibility:")
+	for _, assetType in pairs(compatAssets) do
+		local count = self.assetLibrary[assetType] and #self.assetLibrary[assetType] or 0
+		print("    ", assetType .. ":", count, "variants")
+	end
+
+	print("📈 Total assets loaded:", totalAssets)
+end
+
+-- REPLACE the verifyCriticalAssets function in your Grid Overlay script:
+
+function GridOverlayGenerator:verifyCriticalAssets()
+	local criticalTypes = {"Rock", "Spike", "Pit"}
+	local missingTypes = {}
+
+	for _, assetType in pairs(criticalTypes) do
+		local hasVariant = false
+
+		-- Check if we have ANY variant of this type
+		if self.assetLibrary[assetType] and #self.assetLibrary[assetType] > 0 then
+			hasVariant = true
+		else
+			-- Check in categories for variants
+			for categoryName, categoryAssets in pairs(self.assetLibrary) do
+				if type(categoryAssets) == "table" then
+					for _, asset in pairs(categoryAssets) do
+						if asset.Name and string.find(string.lower(asset.Name), string.lower(assetType)) then
+							hasVariant = true
+							-- Also add to the basic type for backward compatibility
+							if not self.assetLibrary[assetType] then
+								self.assetLibrary[assetType] = {}
+							end
+							table.insert(self.assetLibrary[assetType], asset)
+							print("✅ Found variant for", assetType .. ":", asset.Name)
+							break
+						end
+					end
+					if hasVariant then break end
+				end
+			end
+		end
+
+		if not hasVariant then
+			table.insert(missingTypes, assetType)
+		end
+	end
+
+	if #missingTypes > 0 then
+		warn("❌ Missing critical grid asset types:", table.concat(missingTypes, ", "))
+		print("💡 Create assets with names containing these types:")
+		for _, assetType in pairs(missingTypes) do
+			print("   GridAsset_" .. assetType .. " or GridAsset_" .. assetType .. "_[Variant]")
+		end
+		print("💡 Place them in ReplicatedStorage/GridAssets/ folder structure")
+	else
+		print("✅ All critical grid asset types available!")
+
+		-- Show what variants were found
+		for _, assetType in pairs(criticalTypes) do
+			local count = self.assetLibrary[assetType] and #self.assetLibrary[assetType] or 0
+			print("  ✅", assetType .. ":", count, "variants available")
+		end
+	end
+end
+
+-- ASSET MANAGEMENT: Get random asset from library
+function GridOverlayGenerator:getAsset(assetType)
+	local assets = self.assetLibrary[assetType]
+	if assets and #assets > 0 then
+		return assets[math.random(1, #assets)]
+	end
+
+	-- Fallback: try to find in categories
+	for categoryName, categoryAssets in pairs(self.assetLibrary) do
+		if type(categoryAssets) == "table" then
+			for _, asset in pairs(categoryAssets) do
+				if asset.Name and string.find(asset.Name, assetType) then
+					return asset
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+-- Get assets by category (public API)
+function GridOverlayGenerator:getAssetsByCategory(category)
+	return self.assetLibrary[category] or {}
+end
+
+-- Get random asset from category
+function GridOverlayGenerator:getRandomAssetFromCategory(category)
+	local assets = self:getAssetsByCategory(category)
+	if #assets > 0 then
+		return assets[math.random(1, #assets)]
+	end
+	return nil
+end
+
+-- ======================================================================== 
+-- SECTION 7: GRID CREATION AND POPULATION
+-- ======================================================================== 
+
+-- GRID CREATION: Create empty grid
+function GridOverlayGenerator:createEmptyGrid()
+	local grid = {}
+	for x = 1, CONFIG.GRID_WIDTH do
+		grid[x] = {}
+		for y = 1, CONFIG.GRID_HEIGHT do
+			grid[x][y] = CellTypes.EMPTY
+		end
+	end
+	return grid
+end
+
+-- GRID POPULATION: Apply random generation
+function GridOverlayGenerator:applyRandomGeneration(grid, config)
+	print(" 🎲 Using traditional random generation")
+	for x = 1, CONFIG.GRID_WIDTH do
+		for y = 1, CONFIG.GRID_HEIGHT do
+			-- Skip if already has content
+			if grid[x][y] ~= CellTypes.EMPTY then
+				continue
+			end
+
+			-- Randomly place content based on probabilities
+			local roll = math.random()
+			if roll < config.rockProbability then
+				safePlace(grid, x, y, CellTypes.ROCK)
+			elseif roll < config.rockProbability + config.spikeProbability then
+				safePlace(grid, x, y, CellTypes.SPIKE)
+			elseif roll < config.rockProbability + config.spikeProbability + config.pitProbability then
+				safePlace(grid, x, y, CellTypes.PIT)
+			else
+				grid[x][y] = CellTypes.EMPTY
+			end
+		end
+	end
+end
+
+-- ======================================================================== 
+-- SECTION 8: DOOR PATH CREATION
+-- ======================================================================== 
+
+-- DOOR PATHS: Create clear paths for door connections
+function GridOverlayGenerator:createDoorPaths(grid, connections, pathWidth)
+	local doorPositions = {}
+
+	-- Mark door positions based on connections
+	if connections.North then
+		local doorX = math.floor(CONFIG.GRID_WIDTH / 2)
+		table.insert(doorPositions, {x = doorX, y = 1, direction = "North"})
+	end
+	if connections.South then
+		local doorX = math.floor(CONFIG.GRID_WIDTH / 2)
+		table.insert(doorPositions, {x = doorX, y = CONFIG.GRID_HEIGHT, direction = "South"})
+	end
+	if connections.West then
+		local doorY = math.floor(CONFIG.GRID_HEIGHT / 2)
+		table.insert(doorPositions, {x = 1, y = doorY, direction = "West"})
+	end
+	if connections.East then
+		local doorY = math.floor(CONFIG.GRID_HEIGHT / 2)
+		table.insert(doorPositions, {x = CONFIG.GRID_WIDTH, y = doorY, direction = "East"})
+	end
+
+	-- Create paths between doors using PROTECTED_EMPTY
+	if #doorPositions >= 2 then
+		for i = 1, #doorPositions do
+			for j = i + 1, #doorPositions do
+				self:createPath(grid, doorPositions[i], doorPositions[j], pathWidth)
+			end
+		end
+	elseif #doorPositions == 1 then
+		-- Single door - create path to center
+		local center = {x = math.floor(CONFIG.GRID_WIDTH / 2), y = math.floor(CONFIG.GRID_HEIGHT / 2)}
+		self:createPath(grid, doorPositions[1], center, pathWidth)
+	end
+
+	-- PROTECTION: Mark door areas as PROTECTED (larger area)
+	for _, door in pairs(doorPositions) do
+		for dx = -2, 2 do
+			for dy = -2, 2 do
+				local checkX = door.x + dx
+				local checkY = door.y + dy
+				safeAssign(grid, checkX, checkY, CellTypes.PROTECTED_EMPTY)
+			end
+		end
+	end
+
+	print("🛡️ Protected", #doorPositions, "door areas from pattern override")
+end
+
+-- DOOR PATHS: Create a path between two points
+function GridOverlayGenerator:createPath(grid, point1, point2, width)
+	local x1, y1 = point1.x, point1.y
+	local x2, y2 = point2.x, point2.y
+
+	-- L-shaped path
+	local currentX, currentY = x1, y1
+
+	-- Horizontal movement
+	while currentX ~= x2 do
+		for w = 0, width - 1 do
+			local checkY = currentY + w
+			safeAssign(grid, currentX, checkY, CellTypes.PROTECTED_EMPTY)
+		end
+		currentX = currentX + (currentX < x2 and 1 or -1)
+	end
+
+	-- Vertical movement
+	while currentY ~= y2 do
+		for w = 0, width - 1 do
+			local checkX = currentX + w
+			safeAssign(grid, checkX, currentY, CellTypes.PROTECTED_EMPTY)
+		end
+		currentY = currentY + (currentY < y2 and 1 or -1)
+	end
+end
+
+-- ======================================================================== 
+-- SECTION 9: ASSET PLACEMENT
+-- ======================================================================== 
+
+-- ASSET PLACEMENT: Place physical assets on the room floor
+function GridOverlayGenerator:placeAssetsOnFloor(grid, roomFloor, roomType)
+	local floorPosition = roomFloor.Position
+	local floorSize = roomFloor.Size
+
+	-- Calculate starting position (bottom-left corner of floor) with rectangular cells
+	local startX = floorPosition.X - floorSize.X / 2 + CONFIG.GRID_CELL_SIZE_X / 2
+	local startZ = floorPosition.Z - floorSize.Z / 2 + CONFIG.GRID_CELL_SIZE_Z / 2
+	local floorY = floorPosition.Y + floorSize.Y / 2
+
+	print("🔵 FLOOR INFO:")
+	print(" Floor position:", floorPosition)
+	print(" Floor size:", floorSize)
+	print(" Grid start position:", startX, startZ)
+
+	-- CREATE VISUAL GRID OVERLAY
+	self:createVisualGrid(roomFloor, floorPosition, floorSize, floorY)
+
+	local assetsPlaced = 0
+	local assetsFailed = 0
+
+	for x = 1, CONFIG.GRID_WIDTH do
+		for y = 1, CONFIG.GRID_HEIGHT do
+			local cellType = grid[x][y]
+			-- Only spawn assets for actual obstacle types, NOT for protected empty areas
+			if cellType ~= CellTypes.EMPTY and cellType ~= CellTypes.PROTECTED_EMPTY then
+				-- Calculate world position for this grid cell using rectangular cells
+				local worldX = startX + (x - 1) * CONFIG.GRID_CELL_SIZE_X
+				local worldZ = startZ + (y - 1) * CONFIG.GRID_CELL_SIZE_Z
+				local worldPos = Vector3.new(worldX, floorY + 1, worldZ)
+
+				-- Get asset template
+				local template = self:getAsset(cellType)
+				if template then
+					local success = self:placeAssetSafely(template, worldPos, cellType, x, y, roomFloor.Parent)
+					if success then
+						assetsPlaced = assetsPlaced + 1
+					else
+						assetsFailed = assetsFailed + 1
+					end
+				else
+					print(" ❌ NO TEMPLATE FOR", cellType)
+					assetsFailed = assetsFailed + 1
+				end
+			end
+		end
+	end
+
+	print("🔵 ASSET PLACEMENT COMPLETE:", assetsPlaced, "placed,", assetsFailed, "failed")
+end
+
+-- ASSET PLACEMENT: Safe asset placement with error handling
+function GridOverlayGenerator:placeAssetSafely(template, worldPos, cellType, gridX, gridY, parent)
+	local success, result = pcall(function()
+		local asset = template:Clone()
+		asset.Name = cellType .. "_" .. gridX .. "_" .. gridY
+
+		local templateMainPart = asset.PrimaryPart or asset:FindFirstChildOfClass("BasePart")
+		if not templateMainPart then
+			warn("No main part found in template:", template.Name)
+			asset:Destroy()
+			return false
+		end
+
+		local originalPos = templateMainPart.Position
+		local moveOffset = worldPos - originalPos
+
+		-- Move all parts in the asset
+		for _, descendant in pairs(asset:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Position = descendant.Position + moveOffset
+			end
+		end
+
+		asset.Parent = parent
+
+		-- Apply tags with error handling
+		pcall(function()
+			if cellType == CellTypes.SPIKE then
+				for _, part in pairs(asset:GetDescendants()) do
+					if part:IsA("BasePart") then
+						CollectionService:AddTag(part, "DamageSpike")
+					end
+				end
+			elseif cellType == CellTypes.ROCK or cellType == CellTypes.PIT then
+				for _, part in pairs(asset:GetDescendants()) do
+					if part:IsA("BasePart") then
+						CollectionService:AddTag(part, "RoomObstacle")
+					end
+				end
+			end
+		end)
+
+		return true
+	end)
+
+	if not success then
+		warn("Failed to place asset:", result)
+		return false
+	end
+
+	return result
+end
+
+-- ASSET PLACEMENT: Create visual grid overlay on the floor
+function GridOverlayGenerator:createVisualGrid(roomFloor, floorPosition, floorSize, floorY)
+	local gridFolder = Instance.new("Folder")
+	gridFolder.Name = "GridOverlay_" .. roomFloor.Parent.Name
+	gridFolder.Parent = roomFloor.Parent
+
+	-- Calculate starting position with rectangular cells
+	local startX = floorPosition.X - floorSize.X / 2 + CONFIG.GRID_CELL_SIZE_X / 2
+	local startZ = floorPosition.Z - floorSize.Z / 2 + CONFIG.GRID_CELL_SIZE_Z / 2
+
+	-- Create grid lines
+	for x = 1, CONFIG.GRID_WIDTH do
+		for y = 1, CONFIG.GRID_HEIGHT do
+			-- Calculate world position for this grid cell using rectangular cells
+			local worldX = startX + (x - 1) * CONFIG.GRID_CELL_SIZE_X
+			local worldZ = startZ + (y - 1) * CONFIG.GRID_CELL_SIZE_Z
+			local worldPos = Vector3.new(worldX, floorY + 0.1, worldZ)
+
+			-- Create visual grid cell with rectangular dimensions
+			local gridCell = Instance.new("Part")
+			gridCell.Name = "GridCell_" .. x .. "_" .. y
+			gridCell.Size = Vector3.new(CONFIG.GRID_CELL_SIZE_X - 0.2, 0.1, CONFIG.GRID_CELL_SIZE_Z - 0.2)
+			gridCell.Position = worldPos
+			gridCell.Anchored = true
+			gridCell.CanCollide = false
+			gridCell.Transparency = 0.8
+			gridCell.BrickColor = BrickColor.new("Bright green")
+			gridCell.Material = Enum.Material.Neon
+			gridCell.Parent = gridFolder
+		end
+	end
+
+	print("Created visual grid overlay with", CONFIG.GRID_WIDTH * CONFIG.GRID_HEIGHT, "rectangular cells")
+end
+
+-- ======================================================================== 
+-- SECTION 10: WALL GENERATION
+-- ======================================================================== 
+
+-- Wall Styles
+local WallStyles = {
+	[RoomTypes.SPAWN] = {
+		material = Enum.Material.SmoothPlastic,
+		color = Color3.new(0.9, 0.9, 0.9), -- Clean white
+		brickColor = BrickColor.new("Institutional white")
+	},
+	[RoomTypes.NORMAL] = {
+		material = Enum.Material.Brick,
+		color = Color3.new(0.5, 0.5, 0.5), -- Gray brick
+		brickColor = BrickColor.new("Medium stone grey")
+	},
+	[RoomTypes.BOSS] = {
+		material = Enum.Material.Rock,
+		color = Color3.new(0.2, 0.2, 0.3), -- Dark stone
+		brickColor = BrickColor.new("Really black")
+	},
+	[RoomTypes.TREASURE] = {
+		material = Enum.Material.Marble,
+		color = Color3.new(0.8, 0.7, 0.3), -- Golden stone
+		brickColor = BrickColor.new("Bright yellow")
+	},
+	[RoomTypes.SHOP] = {
+		material = Enum.Material.Wood,
+		color = Color3.new(0.6, 0.4, 0.2), -- Wooden walls
+		brickColor = BrickColor.new("Reddish brown")
+	}
+}
+
+-- WALL GENERATION: Generate procedural walls around room perimeter
+function GridOverlayGenerator:generateProceduralWalls(roomFloor, roomType, connections)
+	print("🏗️ GENERATING PROCEDURAL WALLS FOR", roomType, "ROOM")
+
+	local floorPosition = roomFloor.Position
+	local floorSize = roomFloor.Size
+	local wallStyle = WallStyles[roomType] or WallStyles[RoomTypes.NORMAL]
+
+	-- Calculate wall positions around room perimeter
+	local roomCenterX = floorPosition.X
+	local roomCenterZ = floorPosition.Z
+	local roomCenterY = floorPosition.Y + floorSize.Y / 2
+	local wallY = roomCenterY + CONFIG.WALL_HEIGHT / 2
+
+	-- Room half-dimensions
+	local halfWidth = floorSize.X / 2
+	local halfDepth = floorSize.Z / 2
+
+	-- Create walls folder
+	local wallsFolder = Instance.new("Folder")
+	wallsFolder.Name = "ProceduralWalls"
+	wallsFolder.Parent = roomFloor.Parent
+
+	-- Create all 4 walls with door openings where connected
+	-- North Wall
+	self:createWall(
+		wallsFolder,
+		"NorthWall",
+		Vector3.new(roomCenterX, wallY, roomCenterZ - halfDepth - CONFIG.WALL_THICKNESS/2),
+		Vector3.new(floorSize.X, CONFIG.WALL_HEIGHT, CONFIG.WALL_THICKNESS),
+		wallStyle,
+		connections.North == true,
+		"North"
+	)
+
+	-- South Wall
+	self:createWall(
+		wallsFolder,
+		"SouthWall",
+		Vector3.new(roomCenterX, wallY, roomCenterZ + halfDepth + CONFIG.WALL_THICKNESS/2),
+		Vector3.new(floorSize.X, CONFIG.WALL_HEIGHT, CONFIG.WALL_THICKNESS),
+		wallStyle,
+		connections.South == true,
+		"South"
+	)
+
+	-- West Wall
+	self:createWall(
+		wallsFolder,
+		"WestWall",
+		Vector3.new(roomCenterX - halfWidth - CONFIG.WALL_THICKNESS/2, wallY, roomCenterZ),
+		Vector3.new(CONFIG.WALL_THICKNESS, CONFIG.WALL_HEIGHT, floorSize.Z),
+		wallStyle,
+		connections.West == true,
+		"West"
+	)
+
+	-- East Wall
+	self:createWall(
+		wallsFolder,
+		"EastWall",
+		Vector3.new(roomCenterX + halfWidth + CONFIG.WALL_THICKNESS/2, wallY, roomCenterZ),
+		Vector3.new(CONFIG.WALL_THICKNESS, CONFIG.WALL_HEIGHT, floorSize.Z),
+		wallStyle,
+		connections.East == true,
+		"East"
+	)
+
+	print("🏗️ WALL GENERATION COMPLETE")
+end
+
+-- WALL GENERATION: Create wall with door opening (NO DOOR CREATION - just openings)
+function GridOverlayGenerator:createWall(parent, wallName, position, size, style, hasDoor, direction)
+	print(" Creating", wallName, "door opening:", hasDoor or false)
+
+	if not hasDoor then
+		-- Simple solid wall
+		local wall = Instance.new("Part")
+		wall.Name = wallName
+		wall.Position = position
+		wall.Size = size
+		wall.Anchored = true
+		wall.Material = style.material
+		wall.BrickColor = style.brickColor
+		wall.Color = style.color
+		wall.Parent = parent
+		CollectionService:AddTag(wall, "RoomWall")
+	else
+		-- Wall with door opening (NO DOOR PART - just the opening for shared door system)
+		local isVertical = (direction == "West" or direction == "East")
+
+		if isVertical then
+			-- Vertical wall - split into top and bottom segments
+			local wallLength = size.Z
+			local remainingLength = math.max(0, (wallLength - CONFIG.DOOR_WIDTH) / 2)
+
+			if remainingLength > 0.5 then
+				-- Top segment
+				local topWall = Instance.new("Part")
+				topWall.Name = wallName .. "_Top"
+				topWall.Position = Vector3.new(position.X, position.Y, position.Z - wallLength/2 + remainingLength/2)
+				topWall.Size = Vector3.new(size.X, size.Y, remainingLength)
+				topWall.Anchored = true
+				topWall.Material = style.material
+				topWall.BrickColor = style.brickColor
+				topWall.Color = style.color
+				topWall.Parent = parent
+				CollectionService:AddTag(topWall, "RoomWall")
+
+				-- Bottom segment
+				local bottomWall = Instance.new("Part")
+				bottomWall.Name = wallName .. "_Bottom"
+				bottomWall.Position = Vector3.new(position.X, position.Y, position.Z + wallLength/2 - remainingLength/2)
+				bottomWall.Size = Vector3.new(size.X, size.Y, remainingLength)
+				bottomWall.Anchored = true
+				bottomWall.Material = style.material
+				bottomWall.BrickColor = style.brickColor
+				bottomWall.Color = style.color
+				bottomWall.Parent = parent
+				CollectionService:AddTag(bottomWall, "RoomWall")
+			end
+		else
+			-- Horizontal wall - split into left and right segments
+			local wallLength = size.X
+			local remainingLength = math.max(0, (wallLength - CONFIG.DOOR_WIDTH) / 2)
+
+			if remainingLength > 0.5 then
+				-- Left segment
+				local leftWall = Instance.new("Part")
+				leftWall.Name = wallName .. "_Left"
+				leftWall.Position = Vector3.new(position.X - wallLength/2 + remainingLength/2, position.Y, position.Z)
+				leftWall.Size = Vector3.new(remainingLength, size.Y, size.Z)
+				leftWall.Anchored = true
+				leftWall.Material = style.material
+				leftWall.BrickColor = style.brickColor
+				leftWall.Color = style.color
+				leftWall.Parent = parent
+				CollectionService:AddTag(leftWall, "RoomWall")
+
+				-- Right segment
+				local rightWall = Instance.new("Part")
+				rightWall.Name = wallName .. "_Right"
+				rightWall.Position = Vector3.new(position.X + wallLength/2 - remainingLength/2, position.Y, position.Z)
+				rightWall.Size = Vector3.new(remainingLength, size.Y, size.Z)
+				rightWall.Anchored = true
+				rightWall.Material = style.material
+				rightWall.BrickColor = style.brickColor
+				rightWall.Color = style.color
+				rightWall.Parent = parent
+				CollectionService:AddTag(rightWall, "RoomWall")
+			end
+		end
+
+		print(" ✅ Created wall with door opening (SharedDoorManager will handle doors)")
+	end
+end
+
+-- ======================================================================== 
+-- SECTION 11: CONNECTION DETECTION
+-- ======================================================================== 
+
+-- CONNECTION DETECTION: Detect room connections by looking for adjacent rooms
+function GridOverlayGenerator:detectRoomConnections(roomModel)
+	print("🔍 AUTO-DETECTING ROOM CONNECTIONS for", roomModel.Name)
+
+	local connections = {
+		North = false,
+		South = false,
+		East = false,
+		West = false
+	}
+
+	-- Get room position from floor
+	local floor = self:findRoomFloor(roomModel)
+	if not floor then
+		print(" ❌ No floor found for connection detection")
+		return connections
+	end
+
+	local roomPos = floor.Position
+
+	-- Check each direction for adjacent rooms
+	local checkPositions = {
+		{offset = Vector3.new(0, 0, -CONFIG.ROOM_DEPTH_SPACING), direction = "North"},
+		{offset = Vector3.new(0, 0, CONFIG.ROOM_DEPTH_SPACING), direction = "South"},
+		{offset = Vector3.new(-CONFIG.ROOM_SPACING, 0, 0), direction = "West"},
+		{offset = Vector3.new(CONFIG.ROOM_SPACING, 0, 0), direction = "East"}
+	}
+
+	for _, check in pairs(checkPositions) do
+		local checkPos = roomPos + check.offset
+
+		-- Look for rooms near this position
+		for _, obj in pairs(workspace:GetChildren()) do
+			if obj:IsA("Model") and obj ~= roomModel and string.find(obj.Name, "Room") then
+				-- Find floor in potential adjacent room
+				local adjacentFloor = self:findRoomFloor(obj)
+				if adjacentFloor then
+					local distance = (adjacentFloor.Position - checkPos).Magnitude
+					if distance < 20 then
+						connections[check.direction] = true
+						print(" ✅ Found", check.direction, "connection to", obj.Name)
+						break
+					end
+				end
+			end
+		end
+	end
+
+	return connections
+end
+
+-- CONNECTION DETECTION: Detect connections using dungeon generator grid
+function GridOverlayGenerator:detectConnectionsFromDungeonGrid(dungeonGrid, gridX, gridY)
+	print("🔍 DETECTING CONNECTIONS FROM DUNGEON GRID at", gridX, gridY)
+
+	local connections = {
+		North = false,
+		South = false,
+		East = false,
+		West = false
+	}
+
+	-- Check each direction in the dungeon grid
+	local directions = {
+		{dx = 0, dy = -1, name = "North"},
+		{dx = 0, dy = 1, name = "South"},
+		{dx = -1, dy = 0, name = "West"},
+		{dx = 1, dy = 0, name = "East"}
+	}
+
+	for _, dir in pairs(directions) do
+		local checkX = gridX + dir.dx
+		local checkY = gridY + dir.dy
+
+		-- Check if there's a room at this grid position
+		if dungeonGrid[checkX] and dungeonGrid[checkX][checkY] then
+			connections[dir.name] = true
+			local adjacentRoom = dungeonGrid[checkX][checkY]
+			print(" ✅", dir.name, "connection to", adjacentRoom.roomType, "at grid", checkX, checkY)
+		end
+	end
+
+	return connections
+end
+
+-- Find floor in room model
+function GridOverlayGenerator:findRoomFloor(roomModel)
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (string.lower(child.Name):find("floor") or child.Size == Vector3.new(100, 1, 80)) then
+			return child
+		end
+	end
+	return nil
+end
+
+-- ======================================================================== 
+-- SECTION 12: MAIN OVERLAY GENERATION
+-- ======================================================================== 
+
+-- MAIN GENERATION: Generate grid overlay for a room
+function GridOverlayGenerator:generateRoomOverlay(roomFloor, roomType, connections)
+	if not roomFloor then
+		warn("No room floor provided!")
+		return
+	end
+
+	-- Clean up previous overlay first
+	self:cleanupPreviousOverlay(roomFloor.Parent)
+
+	print("Generating grid overlay for", roomType, "room on floor:", roomFloor.Name)
+
+	-- Get room configuration
+	local config = RoomContentConfig[roomType] or RoomContentConfig[RoomTypes.NORMAL]
+
+	-- Create grid
+	local grid = self:createEmptyGrid()
+
+	-- Add door areas (clear paths to connections)
+	self:createDoorPaths(grid, connections, config.minClearPath)
+
+	-- Generate procedural walls around the room FIRST
+	self:generateProceduralWalls(roomFloor, roomType, connections)
+
+	-- Skip asset generation for special rooms
+	if not config.useAssets then
+		print("🚫 Skipping asset generation for", roomType, "room (special room type)")
+		-- Notify door manager about wall completion
+		self:notifyDoorManager(roomFloor.Parent)
+		return
+	end
+
+	-- Fill remaining cells with content
+	self:populateGrid(grid, config, connections, roomType)
+
+	-- Place physical assets on the room floor
+	self:placeAssetsOnFloor(grid, roomFloor, roomType)
+
+	-- Track this overlay
+	self.activeOverlays[roomFloor.Parent.Name] = true
+
+	-- Notify door manager about completion
+	self:notifyDoorManager(roomFloor.Parent)
+
+	print("Generated grid overlay with content for", roomType, "room")
+end
+
+-- MAIN GENERATION: Populate grid with content
+function GridOverlayGenerator:populateGrid(grid, config, connections, roomType)
+	-- Use random generation (patterns can be added later)
+	print("🎲 Using random generation for", roomType, "room")
+	self:applyRandomGeneration(grid, config)
+end
+
+-- ======================================================================== 
+-- SECTION 13: CLEANUP FUNCTIONS
+-- ======================================================================== 
+
+-- CLEANUP: Clean up previous overlays before creating new ones
+function GridOverlayGenerator:cleanupPreviousOverlay(roomModel)
+	local roomName = roomModel.Name
+
+	-- Clean up visual grid
+	local existingGrid = roomModel:FindFirstChild("GridOverlay_" .. roomName)
+	if existingGrid then
+		existingGrid:Destroy()
+	end
+
+	-- Clean up procedural walls
+	local existingWalls = roomModel:FindFirstChild("ProceduralWalls")
+	if existingWalls then
+		existingWalls:Destroy()
+	end
+
+	-- Clean up assets with grid naming pattern
+	for _, child in pairs(roomModel:GetChildren()) do
+		if child:IsA("Model") and (
+			string.find(child.Name, "Rock_") or
+				string.find(child.Name, "Spike_") or
+				string.find(child.Name, "Pit_")
+			) then
+			child:Destroy()
+		end
+	end
+
+	-- Remove from tracking
+	self.activeOverlays[roomName] = nil
+
+	print("🧹 Cleaned up previous overlay for", roomName)
+end
+
+-- ======================================================================== 
+-- SECTION 14: DOOR MANAGER INTEGRATION
+-- ======================================================================== 
+
+-- INTEGRATION: Notify door manager when room is complete
+function GridOverlayGenerator:notifyDoorManager(roomModel)
+	-- Add small delay to ensure walls are fully created
+	task.spawn(function()
+		task.wait(0.5)
+		if _G.SharedDoorManager then
+			print("🔗 Notifying SharedDoorManager about completed room:", roomModel.Name)
+			_G.SharedDoorManager:checkForNewDoorOpenings()
+		else
+			print("⚠️ SharedDoorManager not found - doors may not be created automatically")
+		end
+	end)
+end
+
+-- ======================================================================== 
+-- SECTION 15: PUBLIC API
+-- ======================================================================== 
+
+-- PUBLIC API: Apply overlay to existing room using dungeon generator data
+function GridOverlayGenerator:applyToRoom(roomModel, roomType, connections, dungeonGrid, gridX, gridY)
+	-- Find the floor in the room model
+	local floor = self:findRoomFloor(roomModel)
+	if floor then
+		print("Found floor in room:", roomModel.Name)
+
+		-- Use dungeon generator grid data for reliable connections
+		if dungeonGrid and gridX and gridY then
+			print("🎯 Using dungeon generator grid data for connections")
+			connections = self:detectConnectionsFromDungeonGrid(dungeonGrid, gridX, gridY)
+		else
+			print("⚠️ No dungeon grid data provided, falling back to position-based detection")
+			connections = self:detectRoomConnections(roomModel)
+		end
+
+		self:generateRoomOverlay(floor, roomType, connections)
+	else
+		warn("Could not find floor in room:", roomModel.Name)
+	end
+end
+
+-- ======================================================================== 
+-- SECTION 16: INITIALIZATION
+-- ======================================================================== 
+
+-- Export for global use
+_G.GridOverlayGenerator = GridOverlayGenerator
+
+print("🎯 Complete Fixed Grid Overlay Asset Placement System Loaded!")
+print("📋 Features:")
+print(" ✅ Asset placement (rocks, spikes, pits)")
+print(" ✅ Wall generation with door openings")
+print(" ✅ Expanded asset categorization system")
+print(" ✅ Door Manager integration")
+print(" ✅ Backward compatibility")
+print(" 🚫 NO door creation - handled by SharedDoorManager")
+print("")
+print("🔧 Debug Commands:")
+print(" _G.GridOverlayGenerator:reportAssetLibrary()")
+
+return GridOverlayGenerator
