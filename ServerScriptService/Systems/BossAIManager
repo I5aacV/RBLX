@@ -1,0 +1,1404 @@
+-- ========================================================================
+-- BOSS AI SYSTEM - Hell Bosses Framework
+-- Place this in ServerScriptService/Systems/BossAIManager
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local PathfindingService = game:GetService("PathfindingService")
+
+-- ========================================================================
+-- BOSS CONFIGURATION
+-- ========================================================================
+
+local BOSS_CONFIG = {
+	-- General settings
+	UPDATE_FREQUENCY = 0.1,
+	DETECTION_RANGE = 150,
+	ARENA_SIZE = 80,
+
+	-- Phase system
+	PHASE_TRANSITIONS = {75, 50, 25, 10}, -- Health percentages for phase changes
+	PHASE_COOLDOWN = 3.0, -- Pause between phases
+
+	-- Attack system
+	ATTACK_COOLDOWN_BASE = 4.0,
+	WARNING_TIME = 2.0, -- Time to warn player before big attacks
+
+	-- Visual effects
+	SCREEN_SHAKE_POWER = 5,
+	CAMERA_SHAKE_DURATION = 0.5,
+
+	-- Damage amounts
+	BOSS_BASE_DAMAGE = 2,
+	MINION_DAMAGE = 1,
+	AOE_DAMAGE = 3
+}
+
+-- ========================================================================
+-- BOSS TYPE DEFINITIONS
+-- ========================================================================
+
+local BOSS_TYPES = {
+	BASEMENT_KEEPER = {
+		name = "The Basement Keeper",
+		description = "Massive demonic janitor who cleans up souls",
+		templateName = "BasementKeeper", -- Name in ReplicatedStorage/EnemyTemplates/Bosses/
+		maxHealth = 200,
+		phases = 4,
+		arena = "BASEMENT",
+
+		-- Phase-specific behaviors
+		phaseData = {
+			[1] = { -- 100-75% HP
+				attackTypes = {"MOP_SLAM", "SCALDING_WATER"},
+				attackCooldown = 5.0,
+				moveSpeed = 8,
+				special = nil
+			},
+			[2] = { -- 75-50% HP  
+				attackTypes = {"MOP_SLAM", "SCALDING_WATER", "SUMMON_IMPS"},
+				attackCooldown = 4.0,
+				moveSpeed = 10,
+				special = "ANGRY_CLEANING"
+			},
+			[3] = { -- 50-25% HP
+				attackTypes = {"MOP_TORNADO", "BOILING_FLOOD", "SUMMON_IMPS"},
+				attackCooldown = 3.5,
+				moveSpeed = 12,
+				special = "FLOOR_HAZARDS"
+			},
+			[4] = { -- 25-0% HP
+				attackTypes = {"ULTIMATE_CLEAN", "MOP_TORNADO", "BOILING_FLOOD"},
+				attackCooldown = 3.0,
+				moveSpeed = 15,
+				special = "BERSERK_CLEANING"
+			}
+		}
+	},
+
+	MAYOR_BRIMSTONE = {
+		name = "Mayor Brimstone",
+		description = "Demonic mayor who commands hellish townspeople",
+		templateName = "MayorBrimstone",
+		maxHealth = 250,
+		phases = 4,
+		arena = "TERRORTOWN",
+
+		phaseData = {
+			[1] = { -- 100-75% HP
+				attackTypes = {"POLITICAL_SPEECH", "SUMMON_TOWNSPEOPLE"},
+				attackCooldown = 4.5,
+				moveSpeed = 6,
+				special = nil
+			},
+			[2] = { -- 75-50% HP
+				attackTypes = {"HELL_CONTRACT", "SUMMON_TOWNSPEOPLE", "MAYOR_DECREE"},
+				attackCooldown = 4.0,
+				moveSpeed = 8,
+				special = "CORRUPT_BUILDINGS"
+			},
+			[3] = { -- 50-25% HP
+				attackTypes = {"BINDING_CONTRACT", "TOWNSPEOPLE_ARMY", "HELLFIRE_SPEECH"},
+				attackCooldown = 3.5,
+				moveSpeed = 10,
+				special = "TOWN_TRANSFORMATION"
+			},
+			[4] = { -- 25-0% HP
+				attackTypes = {"FINAL_CONTRACT", "DEMON_TRANSFORMATION", "TOWN_COLLAPSE"},
+				attackCooldown = 3.0,
+				moveSpeed = 12,
+				special = "TRUE_DEMON_FORM"
+			}
+		}
+	},
+
+	MEMORY_DEVOURER = {
+		name = "The Memory Devourer",
+		description = "Writhing mass of stolen memories and forgotten souls",
+		templateName = "MemoryDevourer",
+		maxHealth = 300,
+		phases = 4,
+		arena = "MEMORY_ABYSS",
+
+		phaseData = {
+			[1] = { -- 100-75% HP
+				attackTypes = {"MEMORY_TENDRIL", "FORGOTTEN_WHISPERS"},
+				attackCooldown = 4.0,
+				moveSpeed = 10,
+				special = nil
+			},
+			[2] = { -- 75-50% HP
+				attackTypes = {"TRAUMATIC_MEMORY", "SOUL_ABSORPTION", "MEMORY_MAZE"},
+				attackCooldown = 3.5,
+				moveSpeed = 12,
+				special = "STEAL_ABILITIES"
+			},
+			[3] = { -- 50-25% HP
+				attackTypes = {"MEMORY_STORM", "ABILITY_THEFT", "NIGHTMARE_PROJECTION"},
+				attackCooldown = 3.0,
+				moveSpeed = 15,
+				special = "MEMORY_ILLUSIONS"
+			},
+			[4] = { -- 25-0% HP
+				attackTypes = {"TOTAL_AMNESIA", "MEMORY_EXPLOSION", "SOUL_DEVOURING"},
+				attackCooldown = 2.5,
+				moveSpeed = 18,
+				special = "MEMORY_OVERLOAD"
+			}
+		}
+	},
+
+	DEMON_LORD = {
+		name = "The Demon Lord of Despair",
+		description = "Ancient demon ruler who imprisoned Timmy's father",
+		templateName = "DemonLord",
+		maxHealth = 500, -- Two-phase boss (250 each form)
+		phases = 2, -- Special two-phase boss
+		arena = "HEART_OF_DESPAIR",
+
+		phaseData = {
+			[1] = { -- True Demon Form (100-50% total HP)
+				attackTypes = {"DESPAIR_BEAM", "HELLFIRE_RAIN", "DEMON_CHARGE", "SUMMON_SOULS"},
+				attackCooldown = 4.0,
+				moveSpeed = 8,
+				special = "DESPAIR_AURA"
+			},
+			[2] = { -- Possessing Father Form (50-0% total HP)
+				attackTypes = {"CORRUPTED_LOVE", "FATHER_PLEAS", "POSSESSION_BURST", "DESPAIR_MANIPULATION"},
+				attackCooldown = 3.0,
+				moveSpeed = 12,
+				special = "EMOTIONAL_MANIPULATION"
+			}
+		}
+	}
+}
+
+-- ========================================================================
+-- BOSS AI MANAGER CLASS
+-- ========================================================================
+
+local BossAIManager = {}
+BossAIManager.__index = BossAIManager
+
+function BossAIManager.new()
+	local self = setmetatable({}, BossAIManager)
+	self.activeBosses = {}
+	self.bossConnections = {}
+	self.enemyTemplates = ReplicatedStorage:WaitForChild("EnemyTemplates")
+	self.bossTemplates = self.enemyTemplates:WaitForChild("Bosses")
+
+	self:initializeBossSystem()
+	return self
+end
+
+-- ========================================================================
+-- BOSS SYSTEM INITIALIZATION
+-- ========================================================================
+
+function BossAIManager:initializeBossSystem()
+	print("👑 Initializing Boss AI System...")
+
+	-- Set up boss type detection
+	for bossType, config in pairs(BOSS_TYPES) do
+		self:setupBossType(bossType, config)
+	end
+
+	self:startBossUpdateLoop()
+	print("✅ Boss AI System initialized with", self:countBossTypes(), "boss types")
+end
+
+function BossAIManager:setupBossType(bossType, config)
+	local tag = "Boss_" .. config.templateName
+	print("👑 Setting up boss type:", config.name, "with tag:", tag)
+
+	-- Listen for new bosses being tagged
+	CollectionService:GetInstanceAddedSignal(tag):Connect(function(boss)
+		self:registerBoss(boss, bossType, config)
+	end)
+
+	-- Register existing bosses
+	for _, boss in pairs(CollectionService:GetTagged(tag)) do
+		self:registerBoss(boss, bossType, config)
+	end
+end
+
+function BossAIManager:registerBoss(boss, bossType, config)
+	if not boss:FindFirstChild("Humanoid") then
+		warn("❌ Boss missing Humanoid:", boss.Name)
+		return
+	end
+
+	print("👑 Registering boss:", boss.Name, "as", config.name)
+
+	local humanoid = boss:FindFirstChild("Humanoid")
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart then
+		warn("❌ Boss missing essential parts:", boss.Name)
+		return
+	end
+
+	-- Set up boss data
+	local bossData = {
+		boss = boss,
+		bossType = bossType,
+		config = config,
+
+		-- Health and phases
+		maxHealth = config.maxHealth,
+		currentHealth = config.maxHealth,
+		currentPhase = 1,
+		isTransitioning = false,
+
+		-- Combat state
+		lastAttack = 0,
+		currentTarget = nil,
+		attackQueue = {},
+		isWarning = false,
+
+		-- Minions and effects
+		activeMinions = {},
+		activeEffects = {},
+
+		-- Arena control
+		arenaCenter = rootPart.Position,
+		arenaRadius = BOSS_CONFIG.ARENA_SIZE,
+
+		-- Special mechanics
+		stolenAbilities = {}, -- For Memory Devourer
+		contractBindings = {}, -- For Mayor Brimstone
+		cleaningHazards = {}, -- For Basement Keeper
+		fatherForm = false -- For Demon Lord
+	}
+
+	-- Set initial health
+	humanoid.MaxHealth = config.maxHealth
+	humanoid.Health = config.maxHealth
+
+	-- Connect health changed event for phase transitions
+	humanoid.HealthChanged:Connect(function(health)
+		self:checkPhaseTransition(bossData, health)
+	end)
+
+	-- Connect death event
+	humanoid.Died:Connect(function()
+		self:onBossDeath(bossData)
+	end)
+
+	-- Store boss data
+	self.activeBosses[boss] = bossData
+
+	-- Boss entrance effect
+	self:playBossEntrance(bossData)
+
+	print("✅ Boss registered successfully:", config.name)
+end
+
+-- ========================================================================
+-- MAIN BOSS UPDATE LOOP
+-- ========================================================================
+
+function BossAIManager:startBossUpdateLoop()
+	print("🔄 Starting boss update loop...")
+
+	local lastUpdate = tick()
+	self.bossConnections.mainLoop = RunService.Heartbeat:Connect(function()
+		local currentTime = tick()
+		if currentTime - lastUpdate < BOSS_CONFIG.UPDATE_FREQUENCY then
+			return
+		end
+
+		-- Update all active bosses
+		for boss, bossData in pairs(self.activeBosses) do
+			if boss and boss.Parent then
+				local success, error = pcall(function()
+					self:updateBossAI(bossData, currentTime)
+				end)
+				if not success then
+					warn("❌ Boss AI update error for", boss.Name, ":", error)
+				end
+			else
+				self:unregisterBoss(boss)
+			end
+		end
+
+		lastUpdate = currentTime
+	end)
+end
+
+function BossAIManager:updateBossAI(bossData, currentTime)
+	local boss = bossData.boss
+	local config = bossData.config
+	local humanoid = boss:FindFirstChild("Humanoid")
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart or humanoid.Health <= 0 then
+		return
+	end
+
+	-- Skip updates during phase transitions
+	if bossData.isTransitioning then
+		return
+	end
+
+	-- Find target player
+	local target = self:findNearestPlayer(rootPart.Position)
+	if not target or not target.Character then
+		return
+	end
+
+	bossData.currentTarget = target
+	local targetPosition = target.Character.HumanoidRootPart.Position
+	local distance = (targetPosition - rootPart.Position).Magnitude
+
+	-- Check if player is in detection range
+	if distance > BOSS_CONFIG.DETECTION_RANGE then
+		humanoid:MoveTo(rootPart.Position) -- Stand still if no target
+		return
+	end
+
+	-- Update boss behavior based on current phase
+	self:updateBossMovement(bossData, targetPosition, distance, currentTime)
+	self:updateBossAttacks(bossData, distance, currentTime)
+	self:updateSpecialMechanics(bossData, currentTime)
+end
+
+-- ========================================================================
+-- PHASE SYSTEM
+-- ========================================================================
+
+function BossAIManager:checkPhaseTransition(bossData, currentHealth)
+	local healthPercent = (currentHealth / bossData.maxHealth) * 100
+	local config = bossData.config
+
+	-- Special handling for Demon Lord (two distinct forms)
+	if bossData.bossType == "DEMON_LORD" then
+		if healthPercent <= 50 and bossData.currentPhase == 1 and not bossData.fatherForm then
+			self:triggerDemonLordTransformation(bossData)
+			return
+		end
+	end
+
+	-- Check for phase transitions
+	for phase, threshold in ipairs(BOSS_CONFIG.PHASE_TRANSITIONS) do
+		if healthPercent <= threshold and bossData.currentPhase == phase and not bossData.isTransitioning then
+			self:triggerPhaseTransition(bossData, phase + 1)
+			break
+		end
+	end
+end
+
+function BossAIManager:triggerPhaseTransition(bossData, newPhase)
+	local config = bossData.config
+
+	if newPhase > config.phases then
+		return -- No more phases
+	end
+
+	print("👑 Phase transition for", config.name, "entering phase", newPhase)
+
+	bossData.isTransitioning = true
+	bossData.currentPhase = newPhase
+
+	-- Phase transition effects
+	self:playPhaseTransitionEffect(bossData, newPhase)
+
+	-- Pause boss AI during transition
+	task.spawn(function()
+		task.wait(BOSS_CONFIG.PHASE_COOLDOWN)
+		bossData.isTransitioning = false
+		print("✅ Phase transition complete for", config.name)
+	end)
+end
+
+function BossAIManager:triggerDemonLordTransformation(bossData)
+	print("👑 DEMON LORD TRANSFORMATION: True Demon -> Father Form")
+
+	bossData.isTransitioning = true
+	bossData.fatherForm = true
+	bossData.currentPhase = 2
+
+	-- Special transformation sequence
+	self:playDemonLordTransformation(bossData)
+
+	task.spawn(function()
+		task.wait(5.0) -- Longer transition for dramatic effect
+		bossData.isTransitioning = false
+		print("✅ Demon Lord transformation complete")
+	end)
+end
+
+-- ========================================================================
+-- MOVEMENT SYSTEM
+-- ========================================================================
+
+function BossAIManager:updateBossMovement(bossData, targetPosition, distance, currentTime)
+	local boss = bossData.boss
+	local config = bossData.config
+	local humanoid = boss:FindFirstChild("Humanoid")
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart then return end
+
+	local phaseData = config.phaseData[bossData.currentPhase]
+	if not phaseData then return end
+
+	-- Set movement speed based on current phase
+	humanoid.WalkSpeed = phaseData.moveSpeed
+
+	-- Boss-specific movement patterns
+	if bossData.bossType == "BASEMENT_KEEPER" then
+		self:updateBasementKeeperMovement(bossData, targetPosition, distance)
+	elseif bossData.bossType == "MAYOR_BRIMSTONE" then
+		self:updateMayorBrimstoneMovement(bossData, targetPosition, distance)
+	elseif bossData.bossType == "MEMORY_DEVOURER" then
+		self:updateMemoryDevourerMovement(bossData, targetPosition, distance)
+	elseif bossData.bossType == "DEMON_LORD" then
+		self:updateDemonLordMovement(bossData, targetPosition, distance)
+	end
+end
+
+function BossAIManager:updateBasementKeeperMovement(bossData, targetPosition, distance)
+	local humanoid = bossData.boss:FindFirstChild("Humanoid")
+
+	-- Basement Keeper moves aggressively toward player but stops at mop range
+	if distance > 15 then
+		humanoid:MoveTo(targetPosition)
+	else
+		-- Close enough for mop attacks, circle around player
+		local rootPart = bossData.boss:FindFirstChild("HumanoidRootPart")
+		local circlePos = self:getCirclePosition(targetPosition, rootPart.Position, 12)
+		humanoid:MoveTo(circlePos)
+	end
+end
+
+function BossAIManager:updateMayorBrimstoneMovement(bossData, targetPosition, distance)
+	local humanoid = bossData.boss:FindFirstChild("Humanoid")
+
+	-- Mayor prefers to keep distance and command from afar
+	if distance < 20 then
+		-- Too close, back away
+		local rootPart = bossData.boss:FindFirstChild("HumanoidRootPart")
+		local awayDirection = (rootPart.Position - targetPosition).Unit
+		local backoffPos = rootPart.Position + (awayDirection * 15)
+		humanoid:MoveTo(backoffPos)
+	elseif distance > 40 then
+		-- Too far, move closer but not too close
+		local closePos = targetPosition + (targetPosition - bossData.boss.HumanoidRootPart.Position).Unit * 25
+		humanoid:MoveTo(closePos)
+	else
+		-- Good distance, strafe around
+		local rootPart = bossData.boss:FindFirstChild("HumanoidRootPart")
+		local strafePos = self:getStrafePosition(targetPosition, rootPart.Position)
+		humanoid:MoveTo(strafePos)
+	end
+end
+
+function BossAIManager:updateMemoryDevourerMovement(bossData, targetPosition, distance)
+	local humanoid = bossData.boss:FindFirstChild("Humanoid")
+
+	-- Memory Devourer has erratic, unpredictable movement
+	if math.random() > 0.7 then -- 30% chance to teleport instead of walking
+		self:memoryDevourerTeleport(bossData, targetPosition)
+	else
+		-- Normal movement with some randomness
+		local randomOffset = Vector3.new(
+			(math.random() - 0.5) * 20,
+			0,
+			(math.random() - 0.5) * 20
+		)
+		local moveTarget = targetPosition + randomOffset
+		humanoid:MoveTo(moveTarget)
+	end
+end
+
+function BossAIManager:updateDemonLordMovement(bossData, targetPosition, distance)
+	local humanoid = bossData.boss:FindFirstChild("Humanoid")
+
+	if bossData.fatherForm then
+		-- Father form: slower, more emotional movement
+		if distance > 10 then
+			humanoid:MoveTo(targetPosition)
+		else
+			-- Stay close to make emotional appeals
+			local rootPart = bossData.boss:FindFirstChild("HumanoidRootPart")
+			humanoid:MoveTo(rootPart.Position)
+		end
+	else
+		-- True demon form: aggressive and imposing
+		if distance > 20 then
+			humanoid:MoveTo(targetPosition)
+		else
+			-- Demon lord circles around to show dominance
+			local rootPart = bossData.boss:FindFirstChild("HumanoidRootPart")
+			local circlePos = self:getCirclePosition(targetPosition, rootPart.Position, 15)
+			humanoid:MoveTo(circlePos)
+		end
+	end
+end
+
+-- ========================================================================
+-- ATTACK SYSTEM
+-- ========================================================================
+
+function BossAIManager:updateBossAttacks(bossData, distance, currentTime)
+	local config = bossData.config
+	local phaseData = config.phaseData[bossData.currentPhase]
+
+	if not phaseData then return end
+
+	-- Check attack cooldown
+	if currentTime - bossData.lastAttack < phaseData.attackCooldown then
+		return
+	end
+
+	-- Check if player is in range (bosses have longer range than normal enemies)
+	if distance > 50 then
+		return
+	end
+
+	-- Select attack based on current phase
+	local availableAttacks = phaseData.attackTypes
+	local selectedAttack = availableAttacks[math.random(#availableAttacks)]
+
+	print("👑 Boss attack:", config.name, "using", selectedAttack)
+
+	self:executeBossAttack(bossData, selectedAttack, currentTime)
+	bossData.lastAttack = currentTime
+end
+
+function BossAIManager:executeBossAttack(bossData, attackType, currentTime)
+	-- Route to boss-specific attack handlers
+	if bossData.bossType == "BASEMENT_KEEPER" then
+		self:executeBasementKeeperAttack(bossData, attackType, currentTime)
+	elseif bossData.bossType == "MAYOR_BRIMSTONE" then
+		self:executeMayorBrimstoneAttack(bossData, attackType, currentTime)
+	elseif bossData.bossType == "MEMORY_DEVOURER" then
+		self:executeMemoryDevourerAttack(bossData, attackType, currentTime)
+	elseif bossData.bossType == "DEMON_LORD" then
+		self:executeDemonLordAttack(bossData, attackType, currentTime)
+	end
+end
+
+-- ========================================================================
+-- BOSS-SPECIFIC ATTACK IMPLEMENTATIONS
+-- ========================================================================
+
+function BossAIManager:executeBasementKeeperAttack(bossData, attackType, currentTime)
+	if attackType == "MOP_SLAM" then
+		self:basementKeeperMopSlam(bossData)
+	elseif attackType == "SCALDING_WATER" then
+		self:basementKeeperScaldingWater(bossData)
+	elseif attackType == "SUMMON_IMPS" then
+		self:basementKeeperSummonImps(bossData)
+	elseif attackType == "MOP_TORNADO" then
+		self:basementKeeperMopTornado(bossData)
+	elseif attackType == "BOILING_FLOOD" then
+		self:basementKeeperBoilingFlood(bossData)
+	elseif attackType == "ULTIMATE_CLEAN" then
+		self:basementKeeperUltimateClean(bossData)
+	end
+end
+
+function BossAIManager:executeMayorBrimstoneAttack(bossData, attackType, currentTime)
+	if attackType == "POLITICAL_SPEECH" then
+		self:mayorBrimstonePoliticalSpeech(bossData)
+	elseif attackType == "SUMMON_TOWNSPEOPLE" then
+		self:mayorBrimstoneSummonTownspeople(bossData)
+	elseif attackType == "HELL_CONTRACT" then
+		self:mayorBrimstoneHellContract(bossData)
+	elseif attackType == "MAYOR_DECREE" then
+		self:mayorBrimstoneMayorDecree(bossData)
+	elseif attackType == "BINDING_CONTRACT" then
+		self:mayorBrimstoneBindingContract(bossData)
+	elseif attackType == "TOWNSPEOPLE_ARMY" then
+		self:mayorBrimstoneTownspeopleArmy(bossData)
+	elseif attackType == "HELLFIRE_SPEECH" then
+		self:mayorBrimstoneHellfireSpeech(bossData)
+	elseif attackType == "FINAL_CONTRACT" then
+		self:mayorBrimstoneFinalContract(bossData)
+	elseif attackType == "DEMON_TRANSFORMATION" then
+		self:mayorBrimstoneDemonTransformation(bossData)
+	elseif attackType == "TOWN_COLLAPSE" then
+		self:mayorBrimstoneTownCollapse(bossData)
+	end
+end
+
+function BossAIManager:executeMemoryDevourerAttack(bossData, attackType, currentTime)
+	if attackType == "MEMORY_TENDRIL" then
+		self:memoryDevourerMemoryTendril(bossData)
+	elseif attackType == "FORGOTTEN_WHISPERS" then
+		self:memoryDevourerForgottenWhispers(bossData)
+	elseif attackType == "TRAUMATIC_MEMORY" then
+		self:memoryDevourerTraumaticMemory(bossData)
+	elseif attackType == "SOUL_ABSORPTION" then
+		self:memoryDevourerSoulAbsorption(bossData)
+	elseif attackType == "MEMORY_MAZE" then
+		self:memoryDevourerMemoryMaze(bossData)
+	elseif attackType == "MEMORY_STORM" then
+		self:memoryDevourerMemoryStorm(bossData)
+	elseif attackType == "ABILITY_THEFT" then
+		self:memoryDevourerAbilityTheft(bossData)
+	elseif attackType == "NIGHTMARE_PROJECTION" then
+		self:memoryDevourerNightmareProjection(bossData)
+	elseif attackType == "TOTAL_AMNESIA" then
+		self:memoryDevourerTotalAmnesia(bossData)
+	elseif attackType == "MEMORY_EXPLOSION" then
+		self:memoryDevourerMemoryExplosion(bossData)
+	elseif attackType == "SOUL_DEVOURING" then
+		self:memoryDevourerSoulDevouring(bossData)
+	end
+end
+
+function BossAIManager:executeDemonLordAttack(bossData, attackType, currentTime)
+	if attackType == "DESPAIR_BEAM" then
+		self:demonLordDespairBeam(bossData)
+	elseif attackType == "HELLFIRE_RAIN" then
+		self:demonLordHellfireRain(bossData)
+	elseif attackType == "DEMON_CHARGE" then
+		self:demonLordDemonCharge(bossData)
+	elseif attackType == "SUMMON_SOULS" then
+		self:demonLordSummonSouls(bossData)
+	elseif attackType == "CORRUPTED_LOVE" then
+		self:demonLordCorruptedLove(bossData)
+	elseif attackType == "FATHER_PLEAS" then
+		self:demonLordFatherPleas(bossData)
+	elseif attackType == "POSSESSION_BURST" then
+		self:demonLordPossessionBurst(bossData)
+	elseif attackType == "DESPAIR_MANIPULATION" then
+		self:demonLordDespairManipulation(bossData)
+	end
+end
+
+-- ========================================================================
+-- BASEMENT KEEPER ATTACKS (Examples - implement the rest similarly)
+-- ========================================================================
+
+function BossAIManager:basementKeeperMopSlam(bossData)
+	print("🧽 Basement Keeper: Mop Slam!")
+
+	local boss = bossData.boss
+	local target = bossData.currentTarget
+	if not target or not target.Character then return end
+
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	local targetPos = target.Character.HumanoidRootPart.Position
+
+	-- Warning effect
+	self:createWarningEffect(targetPos, 2.0, "MOP_SLAM")
+
+	-- Execute attack after warning
+	task.spawn(function()
+		task.wait(2.0)
+
+		-- Check if player is still in range
+		local currentDistance = (target.Character.HumanoidRootPart.Position - targetPos).Magnitude
+		if currentDistance <= 10 then -- Player didn't move far enough
+			self:dealDamageToPlayer(target, BOSS_CONFIG.BOSS_BASE_DAMAGE * 2)
+			self:createImpactEffect(targetPos, "MOP_SLAM")
+		end
+	end)
+end
+
+function BossAIManager:basementKeeperScaldingWater(bossData)
+	print("🧽 Basement Keeper: Scalding Water Spray!")
+
+	local boss = bossData.boss
+	local target = bossData.currentTarget
+	if not target or not target.Character then return end
+
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	local targetPos = target.Character.HumanoidRootPart.Position
+
+	-- Create water projectile
+	self:createScaldingWaterProjectile(rootPart.Position, targetPos, target)
+end
+
+function BossAIManager:basementKeeperSummonImps(bossData)
+	print("🧽 Basement Keeper: Summoning Cleaning Imps!")
+
+	-- Spawn 3-5 cleaning imp minions
+	local impCount = math.random(3, 5)
+	for i = 1, impCount do
+		self:summonCleaningImp(bossData)
+	end
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+function BossAIManager:findNearestPlayer(position)
+	local nearestPlayer = nil
+	local nearestDistance = math.huge
+
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local distance = (player.Character.HumanoidRootPart.Position - position).Magnitude
+			if distance < nearestDistance then
+				nearestPlayer = player
+				nearestDistance = distance
+			end
+		end
+	end
+
+	return nearestPlayer
+end
+
+function BossAIManager:getCirclePosition(center, current, radius)
+	local direction = (current - center).Unit
+	local angle = math.atan2(direction.Z, direction.X) + math.rad(45) -- Rotate around
+	return center + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+end
+
+function BossAIManager:getStrafePosition(center, current)
+	local toPlayer = (center - current).Unit
+	local strafeDirection = Vector3.new(-toPlayer.Z, 0, toPlayer.X)
+	if math.random() > 0.5 then strafeDirection = -strafeDirection end
+	return current + (strafeDirection * 15)
+end
+
+function BossAIManager:memoryDevourerTeleport(bossData, targetPosition)
+	local boss = bossData.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Teleport to random position around player
+	local teleportDistance = math.random(15, 30)
+	local angle = math.random() * math.pi * 2
+	local teleportPos = targetPosition + Vector3.new(
+		math.cos(angle) * teleportDistance,
+		5, -- Slight height for dramatic effect
+		math.sin(angle) * teleportDistance
+	)
+
+	-- Teleport effect
+	self:createTeleportEffect(rootPart.Position, teleportPos)
+	rootPart.CFrame = CFrame.new(teleportPos)
+end
+
+-- ========================================================================
+-- VISUAL EFFECTS SYSTEM
+-- ========================================================================
+
+function BossAIManager:createWarningEffect(position, duration, attackType)
+	local warning = Instance.new("Part")
+	warning.Name = "BossWarning"
+	warning.Size = Vector3.new(8, 0.2, 8)
+	warning.Position = position
+	warning.Anchored = true
+	warning.CanCollide = false
+	warning.Transparency = 0.5
+	warning.Color = Color3.fromRGB(255, 0, 0)
+	warning.Material = Enum.Material.Neon
+	warning.Shape = Enum.PartType.Cylinder
+	warning.Parent = workspace
+
+	-- Pulsing warning effect
+	local tween = TweenService:Create(warning,
+		TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{Transparency = 0.1}
+	)
+	tween:Play()
+
+	-- Clean up after duration
+	game:GetService("Debris"):AddItem(warning, duration)
+end
+
+function BossAIManager:createImpactEffect(position, attackType)
+	local impact = Instance.new("Explosion")
+	impact.Position = position
+	impact.BlastRadius = 15
+	impact.BlastPressure = 0 -- No physics effect, just visual
+	impact.Parent = workspace
+end
+
+function BossAIManager:createTeleportEffect(fromPos, toPos)
+	-- Disappear effect
+	local disappear = Instance.new("Part")
+	disappear.Size = Vector3.new(4, 8, 4)
+	disappear.Position = fromPos
+	disappear.Anchored = true
+	disappear.CanCollide = false
+	disappear.Color = Color3.fromRGB(100, 0, 100)
+	disappear.Material = Enum.Material.Neon
+	disappear.Transparency = 0.3
+	disappear.Parent = workspace
+
+	local tween1 = TweenService:Create(disappear,
+		TweenInfo.new(0.5, Enum.EasingStyle.Quad),
+		{Size = Vector3.new(0, 0, 0), Transparency = 1}
+	)
+	tween1:Play()
+
+	-- Appear effect
+	task.spawn(function()
+		task.wait(0.3)
+		local appear = disappear:Clone()
+		appear.Position = toPos
+		appear.Size = Vector3.new(0, 0, 0)
+		appear.Parent = workspace
+
+		local tween2 = TweenService:Create(appear,
+			TweenInfo.new(0.5, Enum.EasingStyle.Quad),
+			{Size = Vector3.new(4, 8, 4), Transparency = 0.3}
+		)
+		tween2:Play()
+
+		game:GetService("Debris"):AddItem(appear, 1.0)
+	end)
+
+	game:GetService("Debris"):AddItem(disappear, 1.0)
+end
+
+function BossAIManager:createScaldingWaterProjectile(startPos, targetPos, target)
+	local projectile = Instance.new("Part")
+	projectile.Name = "ScaldingWater"
+	projectile.Size = Vector3.new(2, 2, 2)
+	projectile.Shape = Enum.PartType.Ball
+	projectile.Material = Enum.Material.Water
+	projectile.Color = Color3.fromRGB(255, 150, 0) -- Hot orange water
+	projectile.CanCollide = false
+	projectile.Anchored = true
+	projectile.Position = startPos + Vector3.new(0, 2, 0)
+	projectile.Parent = workspace
+
+	-- Steam effect
+	local steam = Instance.new("Smoke")
+	steam.Size = 5
+	steam.Opacity = 0.8
+	steam.Color = Color3.fromRGB(200, 200, 200)
+	steam.Parent = projectile
+
+	-- Calculate trajectory
+	local direction = (targetPos - startPos).Unit
+	local distance = (targetPos - startPos).Magnitude
+	local travelTime = distance / 30 -- Slower than normal projectiles
+
+	-- Animate projectile
+	local tween = TweenService:Create(projectile,
+		TweenInfo.new(travelTime, Enum.EasingStyle.Quad),
+		{Position = targetPos + Vector3.new(0, 2, 0)}
+	)
+	tween:Play()
+
+	-- Check for collision
+	task.spawn(function()
+		local startTime = tick()
+		while projectile.Parent and tick() - startTime < travelTime + 0.5 do
+			if target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+				local playerPos = target.Character.HumanoidRootPart.Position
+				local projectilePos = projectile.Position
+
+				if (playerPos - projectilePos).Magnitude < 5 then
+					self:dealDamageToPlayer(target, BOSS_CONFIG.BOSS_BASE_DAMAGE)
+					self:createSteamExplosion(projectilePos)
+					break
+				end
+			end
+			task.wait(0.1)
+		end
+
+		-- Create steam explosion on impact
+		if projectile.Parent then
+			self:createSteamExplosion(projectile.Position)
+			projectile:Destroy()
+		end
+	end)
+end
+
+function BossAIManager:createSteamExplosion(position)
+	-- Create multiple steam clouds
+	for i = 1, 5 do
+		local steam = Instance.new("Part")
+		steam.Size = Vector3.new(3, 3, 3)
+		steam.Position = position + Vector3.new(
+			(math.random() - 0.5) * 10,
+			math.random() * 5,
+			(math.random() - 0.5) * 10
+		)
+		steam.Anchored = true
+		steam.CanCollide = false
+		steam.Transparency = 0.3
+		steam.Color = Color3.fromRGB(240, 240, 240)
+		steam.Material = Enum.Material.ForceField
+		steam.Parent = workspace
+
+		-- Animate steam dispersal
+		local tween = TweenService:Create(steam,
+			TweenInfo.new(2.0, Enum.EasingStyle.Quad),
+			{Size = Vector3.new(8, 8, 8), Transparency = 1}
+		)
+		tween:Play()
+
+		game:GetService("Debris"):AddItem(steam, 2.0)
+	end
+end
+
+-- ========================================================================
+-- MINION SUMMONING SYSTEM
+-- ========================================================================
+
+function BossAIManager:summonCleaningImp(bossData)
+	-- This would create a cleaning imp minion
+	-- For now, just create a placeholder
+	local boss = bossData.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	local spawnPos = rootPart.Position + Vector3.new(
+		(math.random() - 0.5) * 20,
+		0,
+		(math.random() - 0.5) * 20
+	)
+
+	print("🧽 Spawning Cleaning Imp at", spawnPos)
+	-- TODO: Create actual imp minion using your existing enemy system
+	-- You could tag it with "AI_Chaser" or create a new "AI_CleaningImp" type
+end
+
+-- ========================================================================
+-- DAMAGE SYSTEM
+-- ========================================================================
+
+function BossAIManager:dealDamageToPlayer(player, damage)
+	print("👑 Boss dealing", damage, "damage to", player.Name)
+
+	-- Try heart system damage first
+	if ReplicatedStorage:FindFirstChild("SpikeHeartDamage") then
+		local damageEvent = ReplicatedStorage.SpikeHeartDamage
+		pcall(function()
+			damageEvent:FireClient(player, damage)
+			print("✅ Boss heart damage sent to", player.Name)
+		end)
+	else
+		-- Fallback to direct humanoid damage
+		if player.Character and player.Character:FindFirstChild("Humanoid") then
+			local humanoid = player.Character.Humanoid
+			humanoid.Health = math.max(0, humanoid.Health - (damage * 5))
+			print("✅ Boss direct damage to", player.Name)
+		end
+	end
+end
+
+-- ========================================================================
+-- SPECIAL MECHANICS SYSTEM
+-- ========================================================================
+
+function BossAIManager:updateSpecialMechanics(bossData, currentTime)
+	local config = bossData.config
+	local phaseData = config.phaseData[bossData.currentPhase]
+
+	if not phaseData or not phaseData.special then
+		return
+	end
+
+	-- Route to boss-specific special mechanics
+	if bossData.bossType == "BASEMENT_KEEPER" then
+		self:updateBasementKeeperSpecial(bossData, phaseData.special, currentTime)
+	elseif bossData.bossType == "MAYOR_BRIMSTONE" then
+		self:updateMayorBrimstoneSpecial(bossData, phaseData.special, currentTime)
+	elseif bossData.bossType == "MEMORY_DEVOURER" then
+		self:updateMemoryDevourerSpecial(bossData, phaseData.special, currentTime)
+	elseif bossData.bossType == "DEMON_LORD" then
+		self:updateDemonLordSpecial(bossData, phaseData.special, currentTime)
+	end
+end
+
+function BossAIManager:updateBasementKeeperSpecial(bossData, special, currentTime)
+	if special == "ANGRY_CLEANING" then
+		-- Basement Keeper moves faster and attacks more frequently
+		-- This is handled in the phase data
+	elseif special == "FLOOR_HAZARDS" then
+		-- Spawn cleaning hazards around the arena
+		self:spawnCleaningHazards(bossData)
+	elseif special == "BERSERK_CLEANING" then
+		-- Final phase: constant hazards and aggressive behavior
+		self:maintainBerserkCleaning(bossData, currentTime)
+	end
+end
+
+function BossAIManager:spawnCleaningHazards(bossData)
+	-- Spawn slippery soap puddles around the arena
+	local arenaCenter = bossData.arenaCenter
+
+	for i = 1, 5 do
+		local hazardPos = arenaCenter + Vector3.new(
+			(math.random() - 0.5) * bossData.arenaRadius,
+			0,
+			(math.random() - 0.5) * bossData.arenaRadius
+		)
+
+		self:createSoapPuddle(hazardPos, bossData)
+	end
+end
+
+function BossAIManager:createSoapPuddle(position, bossData)
+	local puddle = Instance.new("Part")
+	puddle.Name = "SoapPuddle"
+	puddle.Size = Vector3.new(8, 0.2, 8)
+	puddle.Position = position
+	puddle.Anchored = true
+	puddle.CanCollide = false
+	puddle.Transparency = 0.3
+	puddle.Color = Color3.fromRGB(200, 255, 200)
+	puddle.Material = Enum.Material.Neon
+	puddle.Parent = workspace
+
+	-- Add to boss hazards for cleanup
+	table.insert(bossData.cleaningHazards, puddle)
+
+	-- Damage players who touch it
+	local function onTouch(hit)
+		local humanoid = hit.Parent:FindFirstChild("Humanoid")
+		if humanoid and Players:GetPlayerFromCharacter(hit.Parent) then
+			local player = Players:GetPlayerFromCharacter(hit.Parent)
+			self:dealDamageToPlayer(player, 1)
+
+			-- Slow the player down (slippery effect)
+			humanoid.WalkSpeed = humanoid.WalkSpeed * 0.5
+			task.spawn(function()
+				task.wait(3.0)
+				humanoid.WalkSpeed = humanoid.WalkSpeed * 2 -- Restore speed
+			end)
+		end
+	end
+
+	puddle.Touched:Connect(onTouch)
+
+	-- Clean up after 30 seconds
+	game:GetService("Debris"):AddItem(puddle, 30.0)
+end
+
+-- ========================================================================
+-- BOSS ENTRANCE AND EFFECTS
+-- ========================================================================
+
+function BossAIManager:playBossEntrance(bossData)
+	local config = bossData.config
+	print("👑 BOSS ENTRANCE:", config.name)
+
+	-- Create dramatic entrance effect
+	local boss = bossData.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Screen shake effect (you'll need to implement this with RemoteEvents)
+	self:triggerScreenShake(BOSS_CONFIG.SCREEN_SHAKE_POWER, BOSS_CONFIG.CAMERA_SHAKE_DURATION)
+
+	-- Boss entrance light
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 0, 0)
+	light.Brightness = 10
+	light.Range = 50
+	light.Parent = rootPart
+
+	-- Fade in the light
+	local lightTween = TweenService:Create(light,
+		TweenInfo.new(2.0, Enum.EasingStyle.Quad),
+		{Brightness = 2}
+	)
+	lightTween:Play()
+
+	-- Boss name announcement (you'll want to show this in GUI)
+	self:announceBosse(config.name, config.description)
+end
+
+function BossAIManager:playPhaseTransitionEffect(bossData, newPhase)
+	local boss = bossData.boss
+	local config = bossData.config
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	print("👑 PHASE TRANSITION:", config.name, "Phase", newPhase)
+
+	-- Screen shake
+	self:triggerScreenShake(BOSS_CONFIG.SCREEN_SHAKE_POWER * 2, BOSS_CONFIG.CAMERA_SHAKE_DURATION)
+
+	-- Phase transition explosion
+	local explosion = Instance.new("Explosion")
+	explosion.Position = rootPart.Position
+	explosion.BlastRadius = 20
+	explosion.BlastPressure = 0
+	explosion.Parent = workspace
+
+	-- Color change based on phase intensity
+	local phaseColors = {
+		Color3.fromRGB(255, 255, 0), -- Yellow
+		Color3.fromRGB(255, 150, 0), -- Orange  
+		Color3.fromRGB(255, 50, 0),  -- Red
+		Color3.fromRGB(150, 0, 255)  -- Purple
+	}
+
+	local phaseColor = phaseColors[newPhase] or Color3.fromRGB(255, 0, 0)
+
+	-- Flash the boss with phase color
+	self:flashBossColor(boss, phaseColor, 1.0)
+end
+
+function BossAIManager:playDemonLordTransformation(bossData)
+	print("👑 DEMON LORD TRANSFORMATION SEQUENCE")
+
+	local boss = bossData.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Massive screen shake
+	self:triggerScreenShake(BOSS_CONFIG.SCREEN_SHAKE_POWER * 3, 3.0)
+
+	-- Transformation effects
+	for i = 1, 10 do
+		task.spawn(function()
+			task.wait(i * 0.3)
+			local explosion = Instance.new("Explosion")
+			explosion.Position = rootPart.Position + Vector3.new(
+				(math.random() - 0.5) * 20,
+				math.random() * 10,
+				(math.random() - 0.5) * 20
+			)
+			explosion.BlastRadius = 15
+			explosion.BlastPressure = 0
+			explosion.Parent = workspace
+		end)
+	end
+
+	-- TODO: Change boss model to father form
+	-- You'll need to swap the model or change its appearance
+end
+
+function BossAIManager:flashBossColor(boss, color, duration)
+	for _, part in pairs(boss:GetDescendants()) do
+		if part:IsA("BasePart") then
+			local originalColor = part.Color
+			part.Color = color
+
+			task.spawn(function()
+				task.wait(duration)
+				if part.Parent then
+					part.Color = originalColor
+				end
+			end)
+		end
+	end
+end
+
+-- ========================================================================
+-- BOSS DEATH AND CLEANUP
+-- ========================================================================
+
+function BossAIManager:onBossDeath(bossData)
+	local config = bossData.config
+	print("👑 BOSS DEFEATED:", config.name)
+
+	-- Dramatic death effect
+	self:playBossDeathEffect(bossData)
+
+	-- Clean up all boss-related objects
+	self:cleanupBossEffects(bossData)
+
+	-- Remove from active bosses
+	self:unregisterBoss(bossData.boss)
+
+	-- Boss death rewards/progression
+	self:handleBossVictory(bossData)
+end
+
+function BossAIManager:playBossDeathEffect(bossData)
+	local boss = bossData.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Screen shake
+	self:triggerScreenShake(BOSS_CONFIG.SCREEN_SHAKE_POWER * 4, 2.0)
+
+	-- Death explosion sequence
+	for i = 1, 15 do
+		task.spawn(function()
+			task.wait(i * 0.1)
+			local explosion = Instance.new("Explosion")
+			explosion.Position = rootPart.Position + Vector3.new(
+				(math.random() - 0.5) * 15,
+				math.random() * 8,
+				(math.random() - 0.5) * 15
+			)
+			explosion.BlastRadius = 20
+			explosion.BlastPressure = 0
+			explosion.Parent = workspace
+		end)
+	end
+end
+
+function BossAIManager:cleanupBossEffects(bossData)
+	-- Clean up minions
+	for _, minion in pairs(bossData.activeMinions) do
+		if minion and minion.Parent then
+			minion:Destroy()
+		end
+	end
+
+	-- Clean up hazards
+	for _, hazard in pairs(bossData.cleaningHazards) do
+		if hazard and hazard.Parent then
+			hazard:Destroy()
+		end
+	end
+
+	-- Clean up any other boss-specific effects
+	for _, effect in pairs(bossData.activeEffects) do
+		if effect and effect.Parent then
+			effect:Destroy()
+		end
+	end
+end
+
+function BossAIManager:unregisterBoss(boss)
+	if self.activeBosses[boss] then
+		print("🗑️ Unregistering boss:", boss and boss.Name or "Unknown")
+		self.activeBosses[boss] = nil
+	end
+end
+
+-- ========================================================================
+-- REMOTE EVENTS (You'll need to create these)
+-- ========================================================================
+
+function BossAIManager:triggerScreenShake(power, duration)
+	-- TODO: Create RemoteEvent to shake player cameras
+	print("📱 Screen shake:", power, "for", duration, "seconds")
+end
+
+function BossAIManager:announceBosse(name, description)
+	-- TODO: Create RemoteEvent to show boss name in GUI
+	print("📢 BOSS ANNOUNCEMENT:", name, "-", description)
+end
+
+function BossAIManager:handleBossVictory(bossData)
+	-- TODO: Handle progression, rewards, unlock next area, etc.
+	print("🏆 Boss victory! Handle progression for:", bossData.config.name)
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS CONTINUED
+-- ========================================================================
+
+function BossAIManager:countBossTypes()
+	local count = 0
+	for _ in pairs(BOSS_TYPES) do
+		count = count + 1
+	end
+	return count
+end
+
+-- ========================================================================
+-- PUBLIC API
+-- ========================================================================
+
+function BossAIManager:spawnBoss(bossTypeName, position)
+	local bossType = BOSS_TYPES[bossTypeName]
+	if not bossType then
+		warn("❌ Unknown boss type:", bossTypeName)
+		return false
+	end
+
+	local template = self.bossTemplates:FindFirstChild(bossType.templateName)
+	if not template then
+		warn("❌ Boss template not found:", bossType.templateName)
+		return false
+	end
+
+	-- Clone and position the boss
+	local boss = template:Clone()
+	boss.Name = bossType.name .. "_" .. tick()
+
+	if boss:FindFirstChild("HumanoidRootPart") then
+		boss.HumanoidRootPart.Position = position
+	end
+
+	boss.Parent = workspace
+
+	-- Apply boss tag
+	local tag = "Boss_" .. bossType.templateName
+	CollectionService:AddTag(boss, tag)
+
+	print("✅ Spawned boss:", bossType.name, "at", position)
+	return boss
+end
+
+function BossAIManager:getBossStats()
+	local stats = {
+		totalBosses = 0,
+		bossTypes = {}
+	}
+
+	for boss, bossData in pairs(self.activeBosses) do
+		stats.totalBosses = stats.totalBosses + 1
+		local bossTypeName = bossData.bossType
+		if not stats.bossTypes[bossTypeName] then
+			stats.bossTypes[bossTypeName] = 0
+		end
+		stats.bossTypes[bossTypeName] = stats.bossTypes[bossTypeName] + 1
+	end
+
+	return stats
+end
+
+-- ========================================================================
+-- GLOBAL INSTANCE & DEBUG COMMANDS
+-- ========================================================================
+
+local bossManager = BossAIManager.new()
+_G.BossAI = bossManager
+
+-- Debug commands
+_G.BossStats = function()
+	local stats = bossManager:getBossStats()
+	print("👑 BOSS SYSTEM STATS:")
+	print("📊 Total active bosses:", stats.totalBosses)
+	print("🏷️ Boss Types active:")
+	for bossType, count in pairs(stats.bossTypes) do
+		print(" ", bossType .. ":", count, "bosses")
+	end
+end
+
+_G.SpawnBoss = function(bossType, position)
+	position = position or Vector3.new(0, 10, 0)
+	return bossManager:spawnBoss(bossType, position)
+end
+
+_G.ListBossTypes = function()
+	print("👑 AVAILABLE BOSS TYPES:")
+	for bossTypeName, config in pairs(BOSS_TYPES) do
+		print("🏷️", bossTypeName, "-", config.name)
+		print(" 📝", config.description)
+		print(" ❤️ Health:", config.maxHealth, "| Phases:", config.phases)
+		print(" 🏟️ Arena:", config.arena)
+		print("")
+	end
+end
+
+_G.TestBossSpawn = function()
+	-- Spawn all boss types for testing
+	local testPositions = {
+		Vector3.new(0, 10, 0),
+		Vector3.new(30, 10, 0),
+		Vector3.new(0, 10, 30),
+		Vector3.new(30, 10, 30)
+	}
+
+	local i = 1
+	for bossType, _ in pairs(BOSS_TYPES) do
+		local pos = testPositions[i] or Vector3.new(i * 20, 10, 0)
+		_G.SpawnBoss(bossType, pos)
+		i = i + 1
+	end
+end
+
+print("👑 Boss AI System loaded successfully!")
+print("📋 Boss types available:", bossManager:countBossTypes())
+print("🎮 Use _G.ListBossTypes() to see all available bosses")
+print("🎮 Use _G.SpawnBoss('BASEMENT_KEEPER', Vector3.new(0,10,0)) to spawn a boss")
