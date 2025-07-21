@@ -1,5 +1,6 @@
 -- ========================================================================
--- ENEMY SPAWNER LOADER - ServerScript
+-- COMPLETE FIXED ENEMY SPAWNER LOADER - ServerScript
+-- Replace your entire EnemySpawnerLoader with this script
 -- Place this in ServerScriptService/Core/EnemySpawnerLoader
 -- ========================================================================
 
@@ -28,60 +29,10 @@ else
 end
 
 -- ========================================================================
--- INTEGRATION WITH ROOM MANAGER
+-- FIXED DEATH DETECTION WITH ROOMMANAGER INTEGRATION
 -- ========================================================================
 
--- Connect to RoomManager for room entry events
-spawn(function()
-	local attempts = 0
-	while not _G.RoomManager and attempts < 50 do
-		task.wait(0.1)
-		attempts = attempts + 1
-	end
-
-	if _G.RoomManager then
-		-- Register callback for when player enters room
-		_G.RoomManager:onRoomEntered(function(roomData)
-			print("🚪 Player entered room:", roomData.roomID, "- Checking for enemy spawning")
-
-			-- Skip if room is already cleared
-			if _G.RoomManager:isRoomCleared(roomData) then
-				print("✅ Room already cleared, no enemies needed")
-				return
-			end
-
-			-- Skip if room already has enemies
-			if _G.RoomManager:getEnemyCount(roomData) > 0 then
-				print("👹 Room already has enemies")
-				return
-			end
-
-			-- Spawn enemies for this room
-			local spawnedEnemies = enemySpawnerInstance:spawnEnemiesInRoom(roomData)
-
-			if #spawnedEnemies > 0 then
-				-- Add each enemy to RoomManager tracking
-				for _, enemy in pairs(spawnedEnemies) do
-					_G.RoomManager:addEnemyToRoom(roomData, enemy)
-
-					-- Setup death detection that reports to RoomManager
-					enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
-				end
-
-				print("👹 Spawned", #spawnedEnemies, "enemies in", roomData.roomID)
-			end
-		end)
-
-		print("🔗 Connected EnemySpawner to RoomManager")
-	else
-		print("⚠️ RoomManager not found - enemy spawning disabled")
-	end
-end)
-
--- ========================================================================
--- DEATH DETECTION SETUP (connects to RoomManager)
--- ========================================================================
-
+-- FIXED: Proper death detection that integrates with RoomManager
 function enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
 	local humanoid = enemy:FindFirstChild("Humanoid")
 	if not humanoid then
@@ -91,6 +42,14 @@ function enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
 
 	print("🔗 Setting up death detection for:", enemy.Name)
 
+	-- CRITICAL FIX: Register enemy with RoomManager FIRST
+	if _G.RoomManager then
+		_G.RoomManager:addEnemyToRoom(roomData, enemy)
+		print("✅ Registered enemy with RoomManager:", enemy.Name)
+	else
+		warn("❌ RoomManager not found - enemy tracking disabled")
+	end
+
 	local function handleDeath()
 		if enemy:GetAttribute("DeathProcessed") then
 			return
@@ -99,9 +58,12 @@ function enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
 
 		print("💀 Enemy died:", enemy.Name)
 
-		-- Report death to RoomManager
+		-- CRITICAL FIX: Remove from RoomManager tracking
 		if _G.RoomManager then
 			_G.RoomManager:removeEnemyFromRoom(roomData, enemy)
+			print("✅ Removed enemy from RoomManager:", enemy.Name)
+		else
+			warn("❌ RoomManager not found - enemy removal failed")
 		end
 	end
 
@@ -126,6 +88,55 @@ function enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
 
 	print("✅ Death detection setup complete for:", enemy.Name)
 end
+
+-- ========================================================================
+-- INTEGRATION WITH ROOM MANAGER
+-- ========================================================================
+
+-- Connect to RoomManager for room entry events
+spawn(function()
+	local attempts = 0
+	while not _G.RoomManager and attempts < 50 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if _G.RoomManager then
+		-- FIXED: Proper room entry handling with RoomManager integration
+		_G.RoomManager:onRoomEntered(function(roomData)
+			print("🚪 Player entered room:", roomData.roomID, "- Checking for enemy spawning")
+
+			-- Skip if room is already cleared
+			if _G.RoomManager:isRoomCleared(roomData) then
+				print("✅ Room already cleared, no enemies needed")
+				return
+			end
+
+			-- Skip if room already has enemies
+			if _G.RoomManager:getEnemyCount(roomData) > 0 then
+				print("👹 Room already has enemies")
+				return
+			end
+
+			-- Spawn enemies for this room
+			local spawnedEnemies = enemySpawnerInstance:spawnEnemiesInRoom(roomData)
+
+			if #spawnedEnemies > 0 then
+				-- FIXED: Set up death detection for each enemy (auto-registers with RoomManager)
+				for _, enemy in pairs(spawnedEnemies) do
+					enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
+				end
+
+				print("👹 Spawned", #spawnedEnemies, "enemies in", roomData.roomID)
+				print("🔒 RoomManager will handle door locking automatically")
+			end
+		end)
+
+		print("🔗 Connected EnemySpawner to RoomManager")
+	else
+		print("⚠️ RoomManager not found - enemy spawning disabled")
+	end
+end)
 
 -- ========================================================================
 -- DEBUG COMMANDS
@@ -153,11 +164,11 @@ _G.SpawnTestEnemy = function(roomName, enemyType)
 	if floor then
 		local position = floor.Position + Vector3.new(0, 5, 0)
 		local enemy = enemySpawnerInstance:spawnEnemy(enemyType or "Spider", position, roomData)
-		if enemy and _G.RoomManager then
-			_G.RoomManager:addEnemyToRoom(roomData, enemy)
+		if enemy then
+			-- FIXED: Use the fixed death detection
 			enemySpawnerInstance:setupEnemyDeathDetection(enemy, roomData)
+			print("✅ Spawned test enemy in", roomName, "with proper RoomManager integration")
 		end
-		print("✅ Spawned test enemy in", roomName)
 	else
 		print("❌ No floor found in", roomName)
 	end
@@ -174,22 +185,101 @@ _G.EnemySpawnerStatus = function()
 	print("🎯 Enemies spawned:", enemySpawnerInstance:getSpawnedEnemyCount())
 
 	if _G.RoomManager then
+		print("🏠 Connected to RoomManager: ✅")
 		print("🏠 Active rooms with enemies:", _G.RoomManager:getActiveRoomCount())
+	else
+		print("🏠 Connected to RoomManager: ❌")
 	end
+end
+
+-- FIXED: Debug enemy registration with RoomManager
+_G.DebugEnemyRegistration = function()
+	print("=== 👹 ENEMY REGISTRATION DEBUG ===")
+
+	if not _G.RoomManager then
+		print("❌ RoomManager not found")
+		return
+	end
+
+	local totalEnemies = 0
+	for roomData, enemies in pairs(_G.RoomManager.activeRooms) do
+		local count = #enemies
+		totalEnemies = totalEnemies + count
+		print("🏠 Room:", roomData.roomID, "- Tracked enemies:", count)
+
+		-- Check if these enemies actually exist
+		for i, enemy in pairs(enemies) do
+			if enemy.Parent then
+				local humanoid = enemy:FindFirstChild("Humanoid")
+				local health = humanoid and humanoid.Health or "No Humanoid"
+				print("  👹", enemy.Name, "Health:", health)
+			else
+				print("  💀", enemy.Name, "DESTROYED")
+			end
+		end
+	end
+
+	print("📊 Total tracked enemies:", totalEnemies)
+	print("=== END DEBUG ===")
+end
+
+-- FIXED: Debug door integration
+_G.DebugDoorIntegration = function()
+	print("=== 🚪 DOOR INTEGRATION DEBUG ===")
+
+	-- Check RoomManager
+	if _G.RoomManager then
+		print("✅ RoomManager: Available")
+
+		-- Check active rooms
+		local activeRooms = 0
+		for roomData, enemies in pairs(_G.RoomManager.activeRooms) do
+			activeRooms = activeRooms + 1
+			print("🏠 Active room:", roomData.roomID, "Enemies:", #enemies)
+		end
+		print("📊 Active rooms:", activeRooms)
+
+	else
+		print("❌ RoomManager: Missing")
+	end
+
+	-- Check SharedDoorManager
+	if _G.SharedDoorManager then
+		print("✅ SharedDoorManager: Available")
+
+		-- Check doors
+		local doorCount = 0
+		local lockedDoors = 0
+		for doorKey, door in pairs(_G.SharedDoorManager.doors) do
+			doorCount = doorCount + 1
+			if door:GetAttribute("State") == "locked" then
+				lockedDoors = lockedDoors + 1
+			end
+		end
+		print("🚪 Total doors:", doorCount, "Locked:", lockedDoors)
+
+	else
+		print("❌ SharedDoorManager: Missing")
+	end
+
+	print("=== END DEBUG ===")
 end
 
 -- ========================================================================
 -- INITIALIZATION COMPLETE
 -- ========================================================================
 
-print("✅ EnemySpawner system loaded and available globally!")
+print("✅ FIXED EnemySpawner system loaded and available globally!")
 print("👹 Enemy spawning ready for room entries")
-print("🔗 Integrated with RoomManager for automatic spawning")
+print("🔗 Integrated with RoomManager for automatic door control")
 print("")
 print("🔧 Debug Commands:")
 print("  _G.ListEnemyTemplates() - Show available enemy types")
 print("  _G.SpawnTestEnemy('RoomName', 'EnemyType') - Spawn test enemy")
 print("  _G.ClearAllEnemies() - Remove all spawned enemies")
 print("  _G.EnemySpawnerStatus() - Show system status")
+print("  _G.DebugEnemyRegistration() - Check RoomManager enemy tracking")
+print("  _G.DebugDoorIntegration() - Check door system integration")
 print("")
-print("🎯 EnemySpawner ready to spawn enemies on room entry!")
+print("🎯 EnemySpawner ready with FIXED door integration!")
+print("🔒 Doors will now lock/unlock properly based on enemy presence!")
