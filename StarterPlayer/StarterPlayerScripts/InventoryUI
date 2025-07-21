@@ -160,17 +160,19 @@ function InventoryUI:createItemFrame(parent, itemType, position, color)
 	icon.TextXAlignment = Enum.TextXAlignment.Center
 	icon.Parent = frame
 
-	-- Count (right side)
+	-- Count (right side) - FIXED
 	local count = Instance.new("TextLabel")
 	count.Name = "Count"
-	count.Size = UDim2.new(1, -30, 1, 0)
-	count.Position = UDim2.new(0, 30, 0, 0)
+	count.Size = UDim2.new(0, 30, 1, 0)  -- Fixed 30px width instead of relative
+	count.Position = UDim2.new(0, 28, 0, 0)  -- Positioned at X=28
 	count.BackgroundTransparency = 1
 	count.Text = "0"
 	count.TextColor3 = Color3.fromRGB(255, 255, 255)
-	count.TextSize = UI_CONFIG.TEXT_SIZE
+	count.TextSize = 16  -- Slightly smaller text
 	count.Font = UI_CONFIG.FONT
 	count.TextXAlignment = Enum.TextXAlignment.Left
+	count.TextWrapped = true
+	count.ClipsDescendants = true  -- This prevents overflow
 	count.Parent = frame
 
 	return frame
@@ -312,7 +314,8 @@ function InventoryUI:requestInventoryUpdate()
 		-- Send remote event to server for inventory
 		local success, error = pcall(function()
 			-- Look for inventory update remote
-			local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+			local remoteEventsFolder = ReplicatedStorage:FindFirstChild("RemoteEvents")
+			local inventoryRemote = remoteEventsFolder and remoteEventsFolder:FindFirstChild("InventoryUpdate")
 			if inventoryRemote then
 				inventoryRemote:FireServer("REQUEST_INVENTORY")
 			else
@@ -400,7 +403,8 @@ player.CharacterAdded:Connect(onCharacterAdded)
 
 spawn(function()
 	-- Wait for potential InventoryUpdate remote event
-	local inventoryRemote = ReplicatedStorage:WaitForChild("InventoryUpdate", 10)
+	local remoteEventsFolder = ReplicatedStorage:WaitForChild("RemoteEvents", 10)
+	local inventoryRemote = remoteEventsFolder and remoteEventsFolder:WaitForChild("InventoryUpdate", 10)
 	if inventoryRemote then
 		inventoryRemote.OnClientEvent:Connect(function(action, data)
 			if action == "UPDATE_INVENTORY" then
