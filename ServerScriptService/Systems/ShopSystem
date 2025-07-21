@@ -1,0 +1,1209 @@
+-- ========================================================================
+-- SHOP SYSTEM - Complete Implementation
+-- Place this in ServerScriptService/Systems/ShopSystem
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+-- ========================================================================
+-- SHOP CONFIGURATION
+-- ========================================================================
+
+local SHOP_CONFIG = {
+	-- Shop booth spawning
+	BOOTH_SPAWN_DELAY = 1.0, -- Delay before shop appears
+	BOOTH_HEIGHT = 3, -- Height of shop booth
+	BOOTH_WIDTH = 8, -- Width of shop booth
+
+	-- Item configuration
+	RANDOM_ITEMS_COUNT = 3, -- Number of random items per shop
+	SHOP_ITEM_SPACING = 3, -- Distance between items
+	ITEM_HEIGHT_OFFSET = 1.5, -- Height above booth floor
+
+	-- Pricing system
+	BASE_PRICES = {
+		COMMON = {min = 5, max = 8},
+		UNCOMMON = {min = 10, max = 15},
+		RARE = {min = 20, max = 30},
+		LEGENDARY = {min = 40, max = 60},
+		BLESSED = {min = 50, max = 80},
+		CURSED = {min = 15, max = 25} -- Cursed items are "cheaper" but risky
+	},
+
+	-- Spawn chances by rarity (for random items)
+	SPAWN_CHANCES = {
+		COMMON = 40,
+		UNCOMMON = 30,
+		RARE = 20,
+		LEGENDARY = 8,
+		BLESSED = 1,
+		CURSED = 1
+	},
+
+	-- Unique item system
+	UNIQUE_ITEM_PRICE_MULTIPLIER = 0.8, -- Unique items are 20% cheaper
+	UNIQUE_ITEM_RARITY_BOOST = 1.5, -- Higher chance for better rarity
+
+	-- Visual effects
+	PURCHASE_ANIMATION_TIME = 0.5,
+	SHOP_SPAWN_ANIMATION_TIME = 2.0,
+	INSUFFICIENT_FUNDS_FLASH_TIME = 0.3
+}
+
+-- ========================================================================
+-- SHOP MANAGER CLASS
+-- ========================================================================
+
+local ShopManager = {}
+ShopManager.__index = ShopManager
+
+function ShopManager.new()
+	local self = setmetatable({}, ShopManager)
+
+	self.activeShops = {} -- Track all active shops
+	self.playerUniqueItems = {} -- Store unique items per player
+	self.shopRemoteEvents = {}
+
+	self:initialize()
+	return self
+end
+
+function ShopManager:initialize()
+	print("🏪 Shop System initializing...")
+
+	-- Wait for required systems
+	self:waitForSystems()
+
+	-- Setup remote events
+	self:setupRemoteEvents()
+
+	-- Hook into room manager
+	self:hookIntoRoomManager()
+
+	-- Setup player tracking
+	self:setupPlayerTracking()
+
+	print("✅ Shop System ready!")
+end
+
+function ShopManager:waitForSystems()
+	local attempts = 0
+	while (not _G.ItemSpawner or not _G.EnemyDropManager) and attempts < 100 do
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	if not _G.ItemSpawner then
+		warn("❌ ItemSpawner not found! Shop items may not spawn.")
+	end
+
+	if not _G.EnemyDropManager then
+		warn("❌ EnemyDropManager not found! Shop purchases may not work.")
+	end
+
+	print("🔗 Connected to required systems")
+end
+
+function ShopManager:setupRemoteEvents()
+	local remoteEventsFolder = ReplicatedStorage:FindFirstChild("RemoteEvents")
+	if not remoteEventsFolder then
+		remoteEventsFolder = Instance.new("Folder")
+		remoteEventsFolder.Name = "RemoteEvents"
+		remoteEventsFolder.Parent = ReplicatedStorage
+	end
+
+	-- Purchase item remote
+	local purchaseRemote = Instance.new("RemoteEvent")
+	purchaseRemote.Name = "ShopPurchase"
+	purchaseRemote.Parent = remoteEventsFolder
+
+	-- Request unique item remote
+	local uniqueItemRemote = Instance.new("RemoteEvent")
+	uniqueItemRemote.Name = "ShopUniqueItem"
+	uniqueItemRemote.Parent = remoteEventsFolder
+
+	-- Shop UI update remote
+	local shopUIRemote = Instance.new("RemoteEvent")
+	shopUIRemote.Name = "ShopUIUpdate"
+	shopUIRemote.Parent = remoteEventsFolder
+
+	-- Setup event handlers
+	purchaseRemote.OnServerEvent:Connect(function(player, shopId, itemIndex)
+		self:handlePurchase(player, shopId, itemIndex)
+	end)
+
+	uniqueItemRemote.OnServerEvent:Connect(function(player, shopId)
+		self:sendUniqueItem(player, shopId)
+	end)
+
+	self.shopRemoteEvents = {
+		purchase = purchaseRemote,
+		uniqueItem = uniqueItemRemote,
+		uiUpdate = shopUIRemote
+	}
+
+	print("📡 Shop remote events setup complete")
+end
+
+function ShopManager:setupPlayerTracking()
+	-- Initialize existing players
+	for _, player in pairs(Players:GetPlayers()) do
+		self:initializePlayerShopData(player)
+	end
+
+	-- Handle new players
+	Players.PlayerAdded:Connect(function(player)
+		self:initializePlayerShopData(player)
+	end)
+
+	-- Cleanup leaving players
+	Players.PlayerRemoving:Connect(function(player)
+		self.playerUniqueItems[player.UserId] = nil
+	end)
+end
+
+function ShopManager:initializePlayerShopData(player)
+	self.playerUniqueItems[player.UserId] = {}
+	print("🏪 Initialized shop data for:", player.Name)
+end
+
+function ShopManager:hookIntoRoomManager()
+	spawn(function()
+		local attempts = 0
+		while not _G.RoomManager and attempts < 50 do
+			task.wait(0.1)
+			attempts = attempts + 1
+		end
+
+		if _G.RoomManager then
+			-- Register callback for when shop rooms are entered
+			_G.RoomManager:onRoomEntered(function(roomData)
+				if roomData.roomType == "Shop" then
+					print("🏪 Player entered shop room, creating shop...")
+					self:createShopInRoom(roomData.model)
+
+					-- Send shop data to all players in the room
+					for _, player in pairs(Players:GetPlayers()) do
+						if player.Character then
+							local humanoidRootPart = player.Character:FindFirstChild("HumanoidRootPart")
+							if humanoidRootPart then
+								local distance = (humanoidRootPart.Position - roomData.model:FindFirstChild("Floor").Position).Magnitude
+								if distance < 50 then -- Player is in the room
+									local shopData = self.activeShops[roomData.model]
+									if shopData then
+										self:sendShopDataToClient(player, shopData)
+									end
+								end
+							end
+						end
+					end
+				end
+			end)
+
+			print("🔗 Connected ShopManager to RoomManager")
+		else
+			print("⚠️ RoomManager not found - manual shop creation only")
+		end
+	end)
+end
+
+-- ========================================================================
+-- SHOP CREATION
+-- ========================================================================
+
+function ShopManager:createShopInRoom(roomModel)
+	-- Prevent duplicate shops
+	if self.activeShops[roomModel] then
+		print("🏪 Shop already exists in this room")
+		return
+	end
+
+	local floor = self:findRoomFloor(roomModel)
+	if not floor then
+		warn("❌ No floor found in shop room")
+		return
+	end
+
+	-- Create shop booth
+	local shopBooth = self:createShopBooth(roomModel, floor)
+	if not shopBooth then
+		warn("❌ Failed to create shop booth")
+		return
+	end
+
+	-- Generate shop items
+	local shopData = self:generateShopItems(roomModel, shopBooth)
+
+	-- Store shop data
+	self.activeShops[roomModel] = shopData
+
+	-- Animate shop appearance
+	self:animateShopSpawn(shopBooth, shopData.items)
+
+	print("🏪 Shop created with", #shopData.items, "items")
+end
+
+function ShopManager:createShopBooth(roomModel, floor)
+	-- Create shop booth model
+	local shopBooth = Instance.new("Model")
+	shopBooth.Name = "ShopBooth"
+	shopBooth.Parent = roomModel
+
+	-- Shop floor/platform
+	local platform = Instance.new("Part")
+	platform.Name = "ShopPlatform"
+	platform.Size = Vector3.new(SHOP_CONFIG.BOOTH_WIDTH, 0.5, 4)
+	platform.Position = Vector3.new(
+		floor.Position.X,
+		floor.Position.Y + floor.Size.Y/2 + 0.25,
+		floor.Position.Z - floor.Size.Z/3 -- Position towards back of room
+	)
+	platform.Material = Enum.Material.Wood
+	platform.BrickColor = BrickColor.new("Dark orange")
+	platform.Anchored = true
+	platform.Parent = shopBooth
+
+	-- Shop counter/back wall
+	local counter = Instance.new("Part")
+	counter.Name = "ShopCounter"
+	counter.Size = Vector3.new(SHOP_CONFIG.BOOTH_WIDTH, SHOP_CONFIG.BOOTH_HEIGHT, 0.5)
+	counter.Position = Vector3.new(
+		platform.Position.X,
+		platform.Position.Y + SHOP_CONFIG.BOOTH_HEIGHT/2,
+		platform.Position.Z - 2
+	)
+	counter.Material = Enum.Material.Wood
+	counter.BrickColor = BrickColor.new("Brown")
+	counter.Anchored = true
+	counter.Parent = shopBooth
+
+	-- Shop sign
+	local sign = Instance.new("Part")
+	sign.Name = "ShopSign"
+	sign.Size = Vector3.new(4, 1, 0.1)
+	sign.Position = Vector3.new(
+		counter.Position.X,
+		counter.Position.Y + SHOP_CONFIG.BOOTH_HEIGHT/2 + 1,
+		counter.Position.Z + 0.1
+	)
+	sign.Material = Enum.Material.Neon
+	sign.BrickColor = BrickColor.new("Bright yellow")
+	sign.Anchored = true
+	sign.Parent = shopBooth
+
+	-- Shop sign text
+	local signGui = Instance.new("SurfaceGui")
+	signGui.Face = Enum.NormalId.Front
+	signGui.Parent = sign
+
+	local signLabel = Instance.new("TextLabel")
+	signLabel.Size = UDim2.new(1, 0, 1, 0)
+	signLabel.BackgroundTransparency = 1
+	signLabel.Text = "🏪 SHOP 🏪"
+	signLabel.TextColor3 = Color3.new(0, 0, 0)
+	signLabel.TextScaled = true
+	signLabel.Font = Enum.Font.SourceSansBold
+	signLabel.Parent = signGui
+
+	-- CREATE GLOWING RING ON FLOOR
+	local glowRing = Instance.new("Part")
+	glowRing.Name = "ShopGlowRing"
+	glowRing.Size = Vector3.new(6, 0.1, 6)
+	glowRing.Position = Vector3.new(
+		floor.Position.X,
+		floor.Position.Y + floor.Size.Y/2 + 0.05,
+		floor.Position.Z + 2 -- Position in front of booth
+	)
+	glowRing.Material = Enum.Material.ForceField
+	glowRing.BrickColor = BrickColor.new("Bright yellow")
+	glowRing.Shape = Enum.PartType.Cylinder
+	glowRing.Rotation = Vector3.new(0, 0, 90) -- Rotate to lay flat
+	glowRing.Anchored = true
+	glowRing.CanCollide = false
+	glowRing.Transparency = 0.3
+	glowRing.Parent = shopBooth
+
+	-- Add glow effect
+	local pointLight = Instance.new("PointLight")
+	pointLight.Color = Color3.fromRGB(255, 215, 0)
+	pointLight.Brightness = 2
+	pointLight.Range = 15
+	pointLight.Parent = glowRing
+
+	-- Add touched event for shop interaction
+	local connection = nil
+	connection = glowRing.Touched:Connect(function(hit)
+		local humanoid = hit.Parent:FindFirstChild("Humanoid")
+		if humanoid then
+			local player = Players:GetPlayerFromCharacter(hit.Parent)
+			if player then
+				-- Send shop data to this specific player
+				local shopData = self.activeShops[roomModel]
+				if shopData then
+					print("🟡 Player", player.Name, "touched shop ring!")
+					self:sendShopDataToClient(player, shopData)
+
+					-- Also send unique item data
+					if self.shopRemoteEvents.uniqueItem then
+						self.shopRemoteEvents.uniqueItem:FireServer(player, shopData.id)
+					end
+				end
+			end
+		end
+	end)
+
+	-- Store connection in shop data for cleanup (instead of as attribute)
+	if not self.activeShops[roomModel] then
+		self.activeShops[roomModel] = {}
+	end
+	self.activeShops[roomModel].ringConnection = connection
+
+	-- Animate the glow ring
+	self:animateGlowRing(glowRing)
+
+	shopBooth.PrimaryPart = platform
+
+	return shopBooth
+end
+
+function ShopManager:generateShopItems(roomModel, shopBooth)
+	local shopData = {
+		id = tostring(tick()),
+		room = roomModel,
+		booth = shopBooth,
+		items = {}
+	}
+
+	-- Generate random items
+	for i = 1, SHOP_CONFIG.RANDOM_ITEMS_COUNT do
+		local itemData = self:generateRandomShopItem(shopBooth, i)
+		if itemData then
+			table.insert(shopData.items, itemData)
+		end
+	end
+
+	return shopData
+end
+
+function ShopManager:generateRandomShopItem(shopBooth, position)
+	-- Select random item from shop pool
+	local itemId = self:selectRandomItemFromShopPool()
+	if not itemId then
+		warn("❌ No items available for shop")
+		return nil
+	end
+
+	-- Get item data
+	local itemData = self:getItemData(itemId)
+	if not itemData then
+		warn("❌ Item data not found for:", itemId)
+		return nil
+	end
+
+	-- Calculate price
+	local price = self:calculateItemPrice(itemData)
+
+	-- Return shop item data (no physical spawning)
+	return {
+		itemId = itemId,
+		itemData = itemData,
+		price = price,
+		position = position,
+		purchased = false
+	}
+end
+
+function ShopManager:selectRandomItemFromShopPool()
+	-- Use ItemDatabase if available
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase then
+			return ItemDatabase:GetRandomItemFromPool("SHOP")
+		end
+	end
+
+	-- Fallback: Use available items from ItemSpawner
+	if _G.ItemSpawner and _G.ItemSpawner.itemTemplates then
+		local availableItems = {}
+		for itemId, _ in pairs(_G.ItemSpawner.itemTemplates) do
+			table.insert(availableItems, itemId)
+		end
+
+		if #availableItems > 0 then
+			return availableItems[math.random(1, #availableItems)]
+		end
+	end
+
+	return nil
+end
+
+function ShopManager:getItemData(itemId)
+	-- Try ItemDatabase first
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase then
+			return ItemDatabase:GetItem(itemId)
+		end
+	end
+
+	-- Fallback: Create basic item data
+	return {
+		name = itemId:gsub("_", " "):gsub("(%a)([%w_']*)", function(a, b) return a:upper()..b end),
+		rarity = "COMMON",
+		description = "A mysterious item"
+	}
+end
+
+function ShopManager:calculateItemPrice(itemData)
+	local rarity = itemData.rarity or "COMMON"
+	local priceRange = SHOP_CONFIG.BASE_PRICES[rarity] or SHOP_CONFIG.BASE_PRICES.COMMON
+
+	return math.random(priceRange.min, priceRange.max)
+end
+
+function ShopManager:makeItemPurchasable(item, price, itemData)
+	-- Add price tag
+	local priceTag = Instance.new("BillboardGui")
+	priceTag.Name = "PriceTag"
+	priceTag.Size = UDim2.new(0, 100, 0, 40)
+	priceTag.StudsOffset = Vector3.new(0, 2, 0)
+	priceTag.Parent = item
+
+	local priceFrame = Instance.new("Frame")
+	priceFrame.Size = UDim2.new(1, 0, 1, 0)
+	priceFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+	priceFrame.BackgroundTransparency = 0.3
+	priceFrame.BorderSizePixel = 0
+	priceFrame.Parent = priceTag
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = priceFrame
+
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Size = UDim2.new(1, 0, 1, 0)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = "💰 " .. price
+	priceLabel.TextColor3 = Color3.new(1, 1, 1)
+	priceLabel.TextScaled = true
+	priceLabel.Font = Enum.Font.SourceSansBold
+	priceLabel.Parent = priceFrame
+
+	-- Add click detector for purchasing
+	local clickDetector = Instance.new("ClickDetector")
+	clickDetector.MaxActivationDistance = 10
+	clickDetector.Parent = item
+
+	clickDetector.MouseClick:Connect(function(player)
+		self:attemptPurchase(player, item, price, itemData)
+	end)
+
+	-- Store price and data in item
+	item:SetAttribute("ShopPrice", price)
+	item:SetAttribute("ShopItemId", itemData.name)
+end
+
+function ShopManager:animateGlowRing(glowRing)
+	-- Create pulsing glow animation
+	spawn(function()
+		while glowRing.Parent do
+			-- Pulse transparency
+			local pulseIn = TweenService:Create(
+				glowRing,
+				TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+				{Transparency = 0.1}
+			)
+
+			local pulseOut = TweenService:Create(
+				glowRing,
+				TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+				{Transparency = 0.6}
+			)
+
+			pulseIn:Play()
+			pulseIn.Completed:Wait()
+			pulseOut:Play()
+			pulseOut.Completed:Wait()
+		end
+	end)
+
+	-- Also animate the point light
+	local pointLight = glowRing:FindFirstChild("PointLight")
+	if pointLight then
+		spawn(function()
+			while glowRing.Parent do
+				-- Pulse brightness
+				local lightIn = TweenService:Create(
+					pointLight,
+					TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+					{Brightness = 3}
+				)
+
+				local lightOut = TweenService:Create(
+					pointLight,
+					TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+					{Brightness = 1}
+				)
+
+				lightIn:Play()
+				lightIn.Completed:Wait()
+				lightOut:Play()
+				lightOut.Completed:Wait()
+			end
+		end)
+	end
+end
+
+-- ========================================================================
+-- CLEANUP FUNCTIONS
+-- ========================================================================
+
+function ShopManager:cleanupShop(roomModel)
+	local shopData = self.activeShops[roomModel]
+	if shopData then
+		-- Disconnect ring connection if it exists
+		if shopData.ringConnection then
+			shopData.ringConnection:Disconnect()
+			print("🔌 Disconnected shop ring connection")
+		end
+
+		-- Remove from active shops
+		self.activeShops[roomModel] = nil
+		print("🗑️ Cleaned up shop data")
+	end
+end
+
+-- ========================================================================
+-- SHOP DATA TRANSMISSION
+-- ========================================================================
+
+function ShopManager:sendShopDataToClient(player, shopData)
+	-- Send shop data to client for UI display
+	if self.shopRemoteEvents.uiUpdate then
+		local clientShopData = {
+			id = shopData.id,
+			items = {}
+		}
+
+		-- Convert server items to client format
+		for i, itemData in pairs(shopData.items) do
+			table.insert(clientShopData.items, {
+				itemId = itemData.itemId,
+				name = itemData.itemData.name,
+				description = itemData.itemData.description or "A mysterious item",
+				rarity = itemData.itemData.rarity or "COMMON",
+				price = itemData.price,
+				purchased = itemData.purchased,
+				index = i
+			})
+		end
+
+		self.shopRemoteEvents.uiUpdate:FireClient(player, "SHOP_DATA", clientShopData)
+		print("📡 Sent shop data to", player.Name, "with", #clientShopData.items, "items")
+	end
+end
+
+-- ========================================================================
+-- PURCHASE SYSTEM
+-- ========================================================================
+
+function ShopManager:attemptPurchase(player, itemIndex, shopData)
+	-- Get the item data
+	local itemData = shopData.items[itemIndex]
+	if not itemData or itemData.purchased then
+		warn("❌ Item not available or already purchased")
+		return false
+	end
+
+	-- Get player inventory
+	local inventory = nil
+	if _G.EnemyDropManager then
+		inventory = _G.EnemyDropManager:getPlayerInventory(player)
+	end
+
+	if not inventory then
+		warn("❌ Could not get player inventory")
+		return false
+	end
+
+	-- Check if player has enough coins
+	if inventory.coins < itemData.price then
+		print("❌", player.Name, "needs", itemData.price - inventory.coins, "more coins")
+		-- Send insufficient funds message to client
+		if self.shopRemoteEvents.uiUpdate then
+			self.shopRemoteEvents.uiUpdate:FireClient(player, "INSUFFICIENT_FUNDS", {
+				needed = itemData.price - inventory.coins,
+				have = inventory.coins
+			})
+		end
+		return false
+	end
+
+	-- Deduct coins
+	inventory.coins = inventory.coins - itemData.price
+
+	-- Apply item effects immediately
+	self:applyItemEffects(player, itemData.itemId, itemData.itemData)
+
+	-- Mark item as purchased
+	itemData.purchased = true
+
+	print("💰", player.Name, "purchased", itemData.itemData.name, "for", itemData.price, "coins")
+
+	-- Update player inventory UI and send success message
+	if self.shopRemoteEvents.uiUpdate then
+		self.shopRemoteEvents.uiUpdate:FireClient(player, "PURCHASE_SUCCESS", {
+			item = itemData.itemData.name,
+			itemId = itemData.itemId,
+			price = itemData.price,
+			remainingCoins = inventory.coins,
+			itemIndex = itemIndex
+		})
+	end
+
+	return true
+end
+
+function ShopManager:applyItemEffects(player, itemId, itemData)
+	print("🔧 Attempting to apply effects for:", itemData.name, "to", player.Name)
+
+	-- Method 1: Try existing ItemEffects system
+	if _G.ItemEffects then
+		local success = pcall(function()
+			if _G.ItemEffects.applyItemToPlayer then
+				_G.ItemEffects:applyItemToPlayer(player, itemId, itemData)
+			elseif _G.ItemEffects.applyItem then
+				_G.ItemEffects:applyItem(player, itemId)
+			elseif _G.ItemEffects.giveItemToPlayer then
+				_G.ItemEffects:giveItemToPlayer(player, itemId)
+			end
+		end)
+
+		if success then
+			print("✅ Applied", itemData.name, "effects via ItemEffects system")
+			return
+		else
+			print("⚠️ ItemEffects system failed, trying fallback...")
+		end
+	end
+
+	-- Method 2: Try ItemSpawner's pickup system
+	if _G.ItemSpawner then
+		local success = pcall(function()
+			-- Try to simulate item pickup
+			if _G.ItemSpawner.handleItemPickup then
+				_G.ItemSpawner:handleItemPickup(player, itemId, itemData)
+			elseif _G.ItemSpawner.applyItemEffects then
+				_G.ItemSpawner:applyItemEffects(player, itemId, itemData)
+			elseif _G.ItemSpawner.giveItemToPlayer then
+				_G.ItemSpawner:giveItemToPlayer(player, itemId)
+			end
+		end)
+
+		if success then
+			print("✅ Applied", itemData.name, "effects via ItemSpawner system")
+			return
+		else
+			print("⚠️ ItemSpawner system failed, trying manual application...")
+		end
+	end
+
+	-- Method 3: Manual effect application
+	self:applyBasicItemEffects(player, itemId, itemData)
+end
+
+function ShopManager:applyBasicItemEffects(player, itemId, itemData)
+	print("🔧 Applying manual effects for:", itemData.name)
+
+	local character = player.Character
+	if not character then 
+		print("❌ No character found for", player.Name)
+		return 
+	end
+
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not humanoid then 
+		print("❌ No humanoid found for", player.Name)
+		return 
+	end
+
+	-- Get player's current stats for logging
+	local oldHealth = humanoid.Health
+	local oldMaxHealth = humanoid.MaxHealth
+	local oldWalkSpeed = humanoid.WalkSpeed
+
+	-- Apply effects based on item data
+	if itemData.effects then
+		print("📋 Found", #itemData.effects, "effects to apply")
+
+		for i, effect in pairs(itemData.effects) do
+			print("  Effect", i .. ":", effect.type, "=", effect.value)
+
+			if effect.type == "HEALTH_UP" then
+				local healthBonus = effect.value or 20
+				humanoid.MaxHealth = humanoid.MaxHealth + healthBonus
+				humanoid.Health = humanoid.Health + healthBonus
+				print("❤️", player.Name, "gained", healthBonus, "health! (" .. oldMaxHealth .. " → " .. humanoid.MaxHealth .. ")")
+
+			elseif effect.type == "SPEED_UP" then
+				local speedBonus = effect.value or 2
+				humanoid.WalkSpeed = humanoid.WalkSpeed + speedBonus
+				print("💨", player.Name, "gained", speedBonus, "speed! (" .. oldWalkSpeed .. " → " .. humanoid.WalkSpeed .. ")")
+
+			elseif effect.type == "DAMAGE_FLAT" or effect.type == "DAMAGE_UP" then
+				local damageBonus = effect.value or 1
+				local currentDamage = player:GetAttribute("DamageBonus") or 0
+				player:SetAttribute("DamageBonus", currentDamage + damageBonus)
+				print("⚔️", player.Name, "gained", damageBonus, "damage! (Total:", currentDamage + damageBonus .. ")")
+
+			elseif effect.type == "TEARS_UP" then
+				local tearBonus = effect.value or 0.5
+				local currentTears = player:GetAttribute("TearRateBonus") or 0
+				player:SetAttribute("TearRateBonus", currentTears + tearBonus)
+				print("💧", player.Name, "gained", tearBonus, "tear rate! (Total:", currentTears + tearBonus .. ")")
+
+			elseif effect.type == "RANGE_UP" then
+				local rangeBonus = effect.value or 1
+				local currentRange = player:GetAttribute("RangeBonus") or 0
+				player:SetAttribute("RangeBonus", currentRange + rangeBonus)
+				print("🎯", player.Name, "gained", rangeBonus, "range! (Total:", currentRange + rangeBonus .. ")")
+
+			elseif effect.type == "LUCK_UP" then
+				local luckBonus = effect.value or 1
+				local currentLuck = player:GetAttribute("LuckBonus") or 0
+				player:SetAttribute("LuckBonus", currentLuck + luckBonus)
+				print("🍀", player.Name, "gained", luckBonus, "luck! (Total:", currentLuck + luckBonus .. ")")
+
+			else
+				print("⚠️ Unknown effect type:", effect.type)
+			end
+		end
+	else
+		-- Fallback: Apply effects based on item name/ID
+		print("⚠️ No effects found in item data, trying name-based effects...")
+
+		if string.find(itemId:lower(), "health") or string.find(itemId:lower(), "heart") then
+			humanoid.MaxHealth = humanoid.MaxHealth + 20
+			humanoid.Health = humanoid.Health + 20
+			print("❤️", player.Name, "gained health from", itemData.name)
+
+		elseif string.find(itemId:lower(), "speed") or string.find(itemId:lower(), "fast") then
+			humanoid.WalkSpeed = humanoid.WalkSpeed + 3
+			print("💨", player.Name, "gained speed from", itemData.name)
+
+		elseif string.find(itemId:lower(), "damage") or string.find(itemId:lower(), "knife") or string.find(itemId:lower(), "strength") then
+			local currentDamage = player:GetAttribute("DamageBonus") or 0
+			player:SetAttribute("DamageBonus", currentDamage + 2)
+			print("⚔️", player.Name, "gained damage from", itemData.name)
+
+		else
+			print("🎁", player.Name, "received", itemData.name, "but no effects were defined")
+		end
+	end
+
+	print("✅ Manual effect application completed for", itemData.name)
+end
+
+function ShopManager:removeShopItem(item)
+	-- Animate item removal
+	local tween = TweenService:Create(
+		item,
+		TweenInfo.new(SHOP_CONFIG.PURCHASE_ANIMATION_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+		{Transparency = 1}
+	)
+
+	tween:Play()
+
+	tween.Completed:Connect(function()
+		item:Destroy()
+	end)
+end
+
+function ShopManager:showInsufficientFundsEffect(item)
+	local priceTag = item:FindFirstChild("PriceTag")
+	if not priceTag then return end
+
+	local frame = priceTag:FindFirstChild("Frame")
+	if not frame then return end
+
+	-- Flash red
+	frame.BackgroundColor3 = Color3.new(1, 0, 0)
+
+	local tween = TweenService:Create(
+		frame,
+		TweenInfo.new(SHOP_CONFIG.INSUFFICIENT_FUNDS_FLASH_TIME),
+		{BackgroundColor3 = Color3.new(0, 0, 0)}
+	)
+
+	tween:Play()
+end
+
+function ShopManager:playPurchaseEffect(position)
+	-- Create purchase effect
+	local effect = Instance.new("Part")
+	effect.Name = "PurchaseEffect"
+	effect.Size = Vector3.new(1, 1, 1)
+	effect.Position = position
+	effect.Material = Enum.Material.Neon
+	effect.BrickColor = BrickColor.new("Bright yellow")
+	effect.Anchored = true
+	effect.CanCollide = false
+	effect.Shape = Enum.PartType.Ball
+	effect.Parent = workspace
+
+	-- Animate effect
+	local tween = TweenService:Create(
+		effect,
+		TweenInfo.new(SHOP_CONFIG.PURCHASE_ANIMATION_TIME),
+		{
+			Size = Vector3.new(5, 5, 5),
+			Transparency = 1
+		}
+	)
+
+	tween:Play()
+
+	tween.Completed:Connect(function()
+		effect:Destroy()
+	end)
+end
+
+-- ========================================================================
+-- UNIQUE ITEM SYSTEM (CLIENT-SIDE ONLY)
+-- ========================================================================
+
+function ShopManager:generateUniqueItemForPlayer(player, shopId)
+	-- Generate a unique item that only this player can see
+	local playerData = self.playerUniqueItems[player.UserId]
+	if not playerData then
+		playerData = {}
+		self.playerUniqueItems[player.UserId] = playerData
+	end
+
+	-- Check if this shop already has a unique item for this player
+	if playerData[shopId] then
+		return playerData[shopId]
+	end
+
+	-- Generate new unique item
+	local itemId = self:selectUniqueItemForPlayer(player)
+	if not itemId then
+		return nil
+	end
+
+	local itemData = self:getItemData(itemId)
+	if not itemData then
+		return nil
+	end
+
+	-- Calculate special price (discounted)
+	local basePrice = self:calculateItemPrice(itemData)
+	local uniquePrice = math.floor(basePrice * SHOP_CONFIG.UNIQUE_ITEM_PRICE_MULTIPLIER)
+
+	local uniqueItemData = {
+		itemId = itemId,
+		itemData = itemData,
+		price = uniquePrice,
+		isUnique = true
+	}
+
+	-- Store for this player and shop
+	playerData[shopId] = uniqueItemData
+
+	return uniqueItemData
+end
+
+function ShopManager:selectUniqueItemForPlayer(player)
+	-- Select item with boosted rarity chances
+	local roll = math.random(1, 100)
+	local boostedChances = {}
+
+	for rarity, chance in pairs(SHOP_CONFIG.SPAWN_CHANCES) do
+		boostedChances[rarity] = chance * SHOP_CONFIG.UNIQUE_ITEM_RARITY_BOOST
+	end
+
+	-- Normalize chances
+	local total = 0
+	for _, chance in pairs(boostedChances) do
+		total = total + chance
+	end
+
+	local normalizedChances = {}
+	for rarity, chance in pairs(boostedChances) do
+		normalizedChances[rarity] = (chance / total) * 100
+	end
+
+	-- Select rarity based on boosted chances
+	local currentChance = 0
+	local selectedRarity = "COMMON"
+
+	for rarity, chance in pairs(normalizedChances) do
+		currentChance = currentChance + chance
+		if roll <= currentChance then
+			selectedRarity = rarity
+			break
+		end
+	end
+
+	-- Get random item of selected rarity
+	return self:selectRandomItemByRarity(selectedRarity)
+end
+
+function ShopManager:selectRandomItemByRarity(rarity)
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase then
+			local itemsByRarity = ItemDatabase:GetItemsByRarity(rarity)
+			if #itemsByRarity > 0 then
+				local selectedItem = itemsByRarity[math.random(1, #itemsByRarity)]
+				return selectedItem.id
+			end
+		end
+	end
+
+	-- Fallback to any available item
+	return self:selectRandomItemFromShopPool()
+end
+
+function ShopManager:sendUniqueItem(player, shopId)
+	local uniqueItem = self:generateUniqueItemForPlayer(player, shopId)
+
+	if uniqueItem and self.shopRemoteEvents.uniqueItem then
+		self.shopRemoteEvents.uniqueItem:FireClient(player, "UNIQUE_ITEM_DATA", uniqueItem)
+	end
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+function ShopManager:findRoomFloor(roomModel)
+	-- Try multiple methods to find the floor
+	local floor = roomModel:FindFirstChild("Floor") or
+		roomModel:FindFirstChild("RoomFloor") or
+		roomModel:FindFirstChild("Base") or
+		roomModel:FindFirstChildOfClass("BasePart")
+
+	if not floor then
+		-- Search in child models
+		for _, child in pairs(roomModel:GetChildren()) do
+			if child:IsA("Model") then
+				local subFloor = child:FindFirstChild("Floor") or child:FindFirstChild("Base")
+				if subFloor then
+					floor = subFloor
+					break
+				end
+			end
+		end
+	end
+
+	return floor
+end
+
+function ShopManager:animateShopSpawn(shopBooth, items)
+	-- Start everything invisible
+	for _, part in pairs(shopBooth:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.Transparency = 1
+		end
+	end
+
+	for _, itemData in pairs(items) do
+		if itemData.item then
+			for _, part in pairs(itemData.item:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Transparency = 1
+				end
+			end
+		end
+	end
+
+	-- Animate booth appearance
+	spawn(function()
+		task.wait(SHOP_CONFIG.BOOTH_SPAWN_DELAY)
+
+		for _, part in pairs(shopBooth:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local tween = TweenService:Create(
+					part,
+					TweenInfo.new(SHOP_CONFIG.SHOP_SPAWN_ANIMATION_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+					{Transparency = 0}
+				)
+				tween:Play()
+			end
+		end
+
+		-- Animate items after booth
+		task.wait(SHOP_CONFIG.SHOP_SPAWN_ANIMATION_TIME / 2)
+
+		for i, itemData in pairs(items) do
+			spawn(function()
+				task.wait(i * 0.3)
+
+				if itemData.item then
+					for _, part in pairs(itemData.item:GetDescendants()) do
+						if part:IsA("BasePart") then
+							local tween = TweenService:Create(
+								part,
+								TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+								{Transparency = 0}
+							)
+							tween:Play()
+						end
+					end
+				end
+			end)
+		end
+	end)
+end
+
+function ShopManager:handlePurchase(player, shopId, itemIndex)
+	-- Find the shop
+	local shopData = nil
+	for _, shop in pairs(self.activeShops) do
+		if shop.id == shopId then
+			shopData = shop
+			break
+		end
+	end
+
+	if not shopData then
+		warn("❌ Shop not found:", shopId)
+		return
+	end
+
+	-- Attempt purchase
+	self:attemptPurchase(player, itemIndex, shopData)
+end
+
+-- ========================================================================
+-- GLOBAL SETUP
+-- ========================================================================
+
+-- Create global instance
+local shopManagerInstance = ShopManager.new()
+_G.ShopManager = shopManagerInstance
+
+-- Debug functions
+_G.CreateTestShop = function(roomModel)
+	if not roomModel then
+		warn("❌ No room model provided")
+		return
+	end
+	shopManagerInstance:createShopInRoom(roomModel)
+end
+
+_G.ShopSystemStatus = function()
+	print("🏪 SHOP SYSTEM STATUS:")
+	print("  Active Shops:", #shopManagerInstance.activeShops)
+	print("  Tracked Players:", #shopManagerInstance.playerUniqueItems)
+
+	for room, shopData in pairs(shopManagerInstance.activeShops) do
+		print("  Shop in", room.Name, "- Items:", #shopData.items)
+	end
+end
+
+_G.TestItemEffects = function(playerName, itemId)
+	local player = Players:FindFirstChild(playerName)
+	if not player then
+		print("❌ Player not found:", playerName)
+		return
+	end
+
+	-- Create test item data
+	local testItemData = {
+		name = itemId or "Test Item",
+		effects = {
+			{type = "HEALTH_UP", value = 20},
+			{type = "SPEED_UP", value = 3},
+			{type = "DAMAGE_FLAT", value = 2}
+		}
+	}
+
+	print("🧪 Testing item effects on", playerName)
+	shopManagerInstance:applyItemEffects(player, itemId or "test_item", testItemData)
+end
+
+_G.GiveTestCoins = function(playerName, amount)
+	local player = Players:FindFirstChild(playerName)
+	if not player and _G.EnemyDropManager then
+		print("❌ Player not found:", playerName)
+		return
+	end
+
+	if _G.EnemyDropManager then
+		_G.EnemyDropManager:addToInventory(player, "COIN", amount or 50)
+		print("💰 Gave", amount or 50, "coins to", playerName)
+	else
+		print("❌ EnemyDropManager not found")
+	end
+end
+
+_G.CheckPlayerStats = function(playerName)
+	local player = Players:FindFirstChild(playerName)
+	if not player then
+		print("❌ Player not found:", playerName)
+		return
+	end
+
+	local character = player.Character
+	if not character then
+		print("❌ Character not found for", playerName)
+		return
+	end
+
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not humanoid then
+		print("❌ Humanoid not found for", playerName)
+		return
+	end
+
+	print("📊 PLAYER STATS FOR", playerName .. ":")
+	print("  Health:", humanoid.Health .. "/" .. humanoid.MaxHealth)
+	print("  Speed:", humanoid.WalkSpeed)
+	print("  Damage Bonus:", player:GetAttribute("DamageBonus") or 0)
+	print("  Tear Rate Bonus:", player:GetAttribute("TearRateBonus") or 0)
+	print("  Range Bonus:", player:GetAttribute("RangeBonus") or 0)
+	print("  Luck Bonus:", player:GetAttribute("LuckBonus") or 0)
+
+	if _G.EnemyDropManager then
+		local inventory = _G.EnemyDropManager:getPlayerInventory(player)
+		if inventory then
+			print("  Coins:", inventory.coins)
+			print("  Bombs:", inventory.bombs)
+			print("  Keys:", inventory.keys)
+		end
+	end
+end
+
+print("🏪 Shop System loaded successfully!")
+print("📋 Features:")
+print("  ✅ Automatic shop spawning in shop rooms")
+print("  ✅ 3 random items based on rarity system")
+print("  ✅ 1 unique item per player (client-side)")
+print("  ✅ Coin-based purchasing system")
+print("  ✅ Animated shop booth creation")
+print("  ✅ Price tags and purchase effects")
+print("  ✅ Integration with existing ItemSpawner")
+print("  ✅ Integration with EnemyDropSystem for coins")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.CreateTestShop(roomModel) - Create shop in specific room")
+print("  _G.ShopSystemStatus() - Show system status")
+print("")
+print("🎮 The shop system will automatically create shops when players enter shop rooms!")
+
+return ShopManager
