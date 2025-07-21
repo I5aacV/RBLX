@@ -1,0 +1,462 @@
+-- ========================================================================
+-- ISAAC-STYLE INVENTORY UI SYSTEM (CLIENT-SIDE)
+-- Place this in StarterPlayerScripts/InventoryUI
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
+local UI_CONFIG = {
+	-- Positioning (Isaac-style: top-left corner)
+	MAIN_POSITION = UDim2.new(0, 20, 0, 80), -- Below hearts
+	ITEM_SIZE = UDim2.new(0, 60, 0, 30),
+	ITEM_SPACING = 5,
+
+	-- Colors (Isaac-inspired)
+	COIN_COLOR = Color3.fromRGB(255, 215, 0), -- Gold
+	BOMB_COLOR = Color3.fromRGB(80, 80, 80), -- Dark gray
+	KEY_COLOR = Color3.fromRGB(255, 255, 100), -- Light yellow
+
+	-- Animation
+	UPDATE_ANIMATION_TIME = 0.3,
+	PICKUP_FLASH_TIME = 0.2,
+
+	-- Font
+	FONT = Enum.Font.SourceSansBold,
+	TEXT_SIZE = 18
+}
+
+-- ========================================================================
+-- INVENTORY UI MANAGER CLASS
+-- ========================================================================
+
+local InventoryUI = {}
+InventoryUI.__index = InventoryUI
+
+function InventoryUI.new()
+	local self = setmetatable({}, InventoryUI)
+
+	self.gui = nil
+	self.itemFrames = {}
+	self.currentInventory = {
+		coins = 0,
+		bombs = 0,
+		keys = 0
+	}
+
+	self:createUI()
+	self:requestInventoryUpdate()
+	self:setupPeriodicUpdates()
+
+	return self
+end
+
+-- ========================================================================
+-- UI CREATION
+-- ========================================================================
+
+function InventoryUI:createUI()
+	-- Create main ScreenGui
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "InventoryUI"
+	screenGui.ResetOnSpawn = false
+	screenGui.DisplayOrder = 50 -- Below hearts but above most UI
+	screenGui.Parent = playerGui
+
+	-- Create main frame
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "InventoryFrame"
+	mainFrame.Size = UDim2.new(0, 200, 0, 100)
+	mainFrame.Position = UI_CONFIG.MAIN_POSITION
+	mainFrame.BackgroundTransparency = 1
+	mainFrame.Parent = screenGui
+
+	-- Create inventory items
+	self:createCoinUI(mainFrame, 1)
+	self:createBombUI(mainFrame, 2) 
+	self:createKeyUI(mainFrame, 3)
+
+	self.gui = screenGui
+	self.mainFrame = mainFrame
+
+	print("💰 Inventory UI created!")
+end
+
+function InventoryUI:createCoinUI(parent, position)
+	local frame = self:createItemFrame(parent, "Coins", position, UI_CONFIG.COIN_COLOR)
+
+	-- Coin icon (you can replace with actual image)
+	local icon = frame:FindFirstChild("Icon")
+	icon.Text = "💰"
+
+	self.itemFrames.coins = frame
+end
+
+function InventoryUI:createBombUI(parent, position)
+	local frame = self:createItemFrame(parent, "Bombs", position, UI_CONFIG.BOMB_COLOR)
+
+	-- Bomb icon
+	local icon = frame:FindFirstChild("Icon")
+	icon.Text = "💣"
+
+	self.itemFrames.bombs = frame
+end
+
+function InventoryUI:createKeyUI(parent, position)
+	local frame = self:createItemFrame(parent, "Keys", position, UI_CONFIG.KEY_COLOR)
+
+	-- Key icon
+	local icon = frame:FindFirstChild("Icon")
+	icon.Text = "🗝️"
+
+	self.itemFrames.keys = frame
+end
+
+function InventoryUI:createItemFrame(parent, itemType, position, color)
+	-- Calculate position
+	local yPos = (position - 1) * (UI_CONFIG.ITEM_SIZE.Y.Offset + UI_CONFIG.ITEM_SPACING)
+
+	-- Main frame
+	local frame = Instance.new("Frame")
+	frame.Name = itemType .. "Frame"
+	frame.Size = UI_CONFIG.ITEM_SIZE
+	frame.Position = UDim2.new(0, 0, 0, yPos)
+	frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	frame.BackgroundTransparency = 0.3
+	frame.BorderSizePixel = 0
+	frame.Parent = parent
+
+	-- Rounded corners
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = frame
+
+	-- Border glow
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Thickness = 2
+	stroke.Transparency = 0.3
+	stroke.Parent = frame
+
+	-- Icon (left side)
+	local icon = Instance.new("TextLabel")
+	icon.Name = "Icon"
+	icon.Size = UDim2.new(0, 25, 1, 0)
+	icon.Position = UDim2.new(0, 5, 0, 0)
+	icon.BackgroundTransparency = 1
+	icon.Text = "?"
+	icon.TextColor3 = color
+	icon.TextSize = 20
+	icon.Font = UI_CONFIG.FONT
+	icon.TextXAlignment = Enum.TextXAlignment.Center
+	icon.Parent = frame
+
+	-- Count (right side)
+	local count = Instance.new("TextLabel")
+	count.Name = "Count"
+	count.Size = UDim2.new(1, -30, 1, 0)
+	count.Position = UDim2.new(0, 30, 0, 0)
+	count.BackgroundTransparency = 1
+	count.Text = "0"
+	count.TextColor3 = Color3.fromRGB(255, 255, 255)
+	count.TextSize = UI_CONFIG.TEXT_SIZE
+	count.Font = UI_CONFIG.FONT
+	count.TextXAlignment = Enum.TextXAlignment.Left
+	count.Parent = frame
+
+	return frame
+end
+
+-- ========================================================================
+-- INVENTORY UPDATES
+-- ========================================================================
+
+function InventoryUI:updateInventoryDisplay(newInventory)
+	local hasChanges = false
+
+	-- Check for changes and update
+	for itemType, newAmount in pairs(newInventory) do
+		local oldAmount = self.currentInventory[itemType] or 0
+
+		if newAmount ~= oldAmount then
+			hasChanges = true
+			self:updateItemCount(itemType, oldAmount, newAmount)
+			self.currentInventory[itemType] = newAmount
+		end
+	end
+
+	if hasChanges then
+		print("💰 Inventory updated:", newInventory.coins, "coins,", newInventory.bombs, "bombs,", newInventory.keys, "keys")
+	end
+end
+
+function InventoryUI:updateItemCount(itemType, oldAmount, newAmount)
+	local frame = self.itemFrames[itemType]
+	if not frame then return end
+
+	local countLabel = frame:FindFirstChild("Count")
+	if not countLabel then return end
+
+	-- Check if amount increased (pickup animation)
+	if newAmount > oldAmount then
+		self:playPickupAnimation(frame)
+	end
+
+	-- Animate the number change
+	self:animateNumberChange(countLabel, oldAmount, newAmount)
+end
+
+function InventoryUI:animateNumberChange(label, oldAmount, newAmount)
+	-- Create temporary label for old number
+	local tempLabel = label:Clone()
+	tempLabel.Name = "TempCount"
+	tempLabel.Text = tostring(oldAmount)
+	tempLabel.Position = label.Position
+	tempLabel.Parent = label.Parent
+
+	-- Immediately update main label
+	label.Text = tostring(newAmount)
+
+	-- Animate old number out (slide up and fade)
+	local slideOutTween = TweenService:Create(tempLabel,
+		TweenInfo.new(UI_CONFIG.UPDATE_ANIMATION_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{
+			Position = tempLabel.Position + UDim2.new(0, 0, 0, -20),
+			TextTransparency = 1
+		}
+	)
+
+	-- Animate new number in (slide down from above)
+	label.Position = label.Position + UDim2.new(0, 0, 0, -20)
+	label.TextTransparency = 1
+
+	local slideInTween = TweenService:Create(label,
+		TweenInfo.new(UI_CONFIG.UPDATE_ANIMATION_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{
+			Position = tempLabel.Position, -- Return to original position
+			TextTransparency = 0
+		}
+	)
+
+	-- Start animations
+	slideOutTween:Play()
+	slideInTween:Play()
+
+	-- Clean up temp label
+	slideOutTween.Completed:Connect(function()
+		tempLabel:Destroy()
+	end)
+end
+
+function InventoryUI:playPickupAnimation(frame)
+	-- Flash the frame border
+	local stroke = frame:FindFirstChild("UIStroke")
+	if stroke then
+		local originalTransparency = stroke.Transparency
+
+		-- Flash bright
+		local flashTween = TweenService:Create(stroke,
+			TweenInfo.new(UI_CONFIG.PICKUP_FLASH_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+			{Transparency = 0, Thickness = 4}
+		)
+
+		-- Return to normal
+		local returnTween = TweenService:Create(stroke,
+			TweenInfo.new(UI_CONFIG.PICKUP_FLASH_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+			{Transparency = originalTransparency, Thickness = 2}
+		)
+
+		flashTween:Play()
+		flashTween.Completed:Connect(function()
+			returnTween:Play()
+		end)
+	end
+
+	-- Scale pulse
+	local originalSize = frame.Size
+	local pulseTween = TweenService:Create(frame,
+		TweenInfo.new(UI_CONFIG.PICKUP_FLASH_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{Size = originalSize + UDim2.new(0, 8, 0, 4)}
+	)
+
+	local returnSizeTween = TweenService:Create(frame,
+		TweenInfo.new(UI_CONFIG.PICKUP_FLASH_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+		{Size = originalSize}
+	)
+
+	pulseTween:Play()
+	pulseTween.Completed:Connect(function()
+		returnSizeTween:Play()
+	end)
+end
+
+-- ========================================================================
+-- SERVER COMMUNICATION
+-- ========================================================================
+
+function InventoryUI:requestInventoryUpdate()
+	-- Request current inventory from server
+	if _G.EnemyDropManager then
+		-- If drop manager is available locally (shouldn't be, but just in case)
+		print("📡 Requesting inventory from local drop manager...")
+	else
+		-- Send remote event to server for inventory
+		local success, error = pcall(function()
+			-- Look for inventory update remote
+			local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+			if inventoryRemote then
+				inventoryRemote:FireServer("REQUEST_INVENTORY")
+			else
+				print("⚠️ No InventoryUpdate RemoteEvent found - will use manual updates")
+			end
+		end)
+
+		if not success then
+			print("❌ Failed to request inventory:", error)
+		end
+	end
+end
+
+function InventoryUI:setupPeriodicUpdates()
+	-- Request inventory updates periodically
+	spawn(function()
+		while self.gui and self.gui.Parent do
+			self:requestInventoryUpdate()
+			task.wait(5) -- Update every 5 seconds
+		end
+	end)
+end
+
+-- ========================================================================
+-- PUBLIC METHODS
+-- ========================================================================
+
+function InventoryUI:setInventory(coins, bombs, keys)
+	local newInventory = {
+		coins = coins or 0,
+		bombs = bombs or 0,
+		keys = keys or 0
+	}
+
+	self:updateInventoryDisplay(newInventory)
+end
+
+function InventoryUI:addCoins(amount)
+	local newAmount = self.currentInventory.coins + amount
+	self:setInventory(newAmount, self.currentInventory.bombs, self.currentInventory.keys)
+end
+
+function InventoryUI:addBombs(amount)
+	local newAmount = self.currentInventory.bombs + amount
+	self:setInventory(self.currentInventory.coins, newAmount, self.currentInventory.keys)
+end
+
+function InventoryUI:addKeys(amount)
+	local newAmount = self.currentInventory.keys + amount
+	self:setInventory(self.currentInventory.coins, self.currentInventory.bombs, newAmount)
+end
+
+function InventoryUI:getCurrentInventory()
+	return {
+		coins = self.currentInventory.coins,
+		bombs = self.currentInventory.bombs,
+		keys = self.currentInventory.keys
+	}
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+-- Create the inventory UI
+local inventoryUI = InventoryUI.new()
+
+-- Make globally accessible for debugging
+_G.InventoryUI = inventoryUI
+
+-- Wait for character spawn before setting up
+local function onCharacterAdded(character)
+	task.wait(1) -- Wait for UI to settle
+	inventoryUI:requestInventoryUpdate()
+end
+
+if player.Character then
+	onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- ========================================================================
+-- REMOTE EVENT HANDLER (IF CREATED)
+-- ========================================================================
+
+spawn(function()
+	-- Wait for potential InventoryUpdate remote event
+	local inventoryRemote = ReplicatedStorage:WaitForChild("InventoryUpdate", 10)
+	if inventoryRemote then
+		inventoryRemote.OnClientEvent:Connect(function(action, data)
+			if action == "UPDATE_INVENTORY" then
+				inventoryUI:setInventory(data.coins, data.bombs, data.keys)
+			elseif action == "ADD_COINS" then
+				inventoryUI:addCoins(data.amount)
+			elseif action == "ADD_BOMBS" then
+				inventoryUI:addBombs(data.amount)
+			elseif action == "ADD_KEYS" then
+				inventoryUI:addKeys(data.amount)
+			end
+		end)
+		print("✅ Connected to server inventory updates")
+	else
+		print("⚠️ No InventoryUpdate RemoteEvent - using manual updates only")
+	end
+end)
+
+-- ========================================================================
+-- DEBUG COMMANDS (CLIENT-SIDE)
+-- ========================================================================
+
+-- Test the UI locally (for debugging)
+_G.TestInventoryUI = function()
+	inventoryUI:setInventory(15, 3, 7)
+	print("🧪 Set test inventory: 15 coins, 3 bombs, 7 keys")
+end
+
+_G.TestPickupEffect = function(itemType)
+	itemType = itemType or "coins"
+	local currentAmount = inventoryUI.currentInventory[itemType] or 0
+
+	if itemType == "coins" then
+		inventoryUI:addCoins(1)
+	elseif itemType == "bombs" then
+		inventoryUI:addBombs(1)
+	elseif itemType == "keys" then
+		inventoryUI:addKeys(1)
+	end
+
+	print("🧪 Tested pickup effect for:", itemType)
+end
+
+print("💰 Isaac-Style Inventory UI loaded!")
+print("📋 Features:")
+print("  ✅ Isaac-style positioning (top-left)")
+print("  ✅ Animated number changes")
+print("  ✅ Pickup flash effects")
+print("  ✅ Server inventory sync")
+print("  ✅ Clean, minimal design")
+print("")
+print("🎮 UI positioned below heart system")
+print("🔧 Debug Commands (client-side):")
+print("  _G.TestInventoryUI() - Set test inventory")
+print("  _G.TestPickupEffect('coins') - Test pickup animation")
+print("")
+print("💡 To connect to server:")
+print("  The UI will auto-sync when you update the drop system")
+print("  Or create an InventoryUpdate RemoteEvent for real-time updates")
