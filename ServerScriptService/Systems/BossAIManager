@@ -1,0 +1,2311 @@
+-- ========================================================================
+-- BOSS AI MANAGER SYSTEM - Isaac-Style Boss Battles
+-- Place this in ServerScriptService/Systems/BossAIManager
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+
+-- ========================================================================
+-- BOSS CONFIGURATION
+-- ========================================================================
+
+local BOSS_CONFIG = {
+	-- General boss settings
+	DETECTION_RANGE = 80, -- Larger than normal enemies
+	ROOM_CENTER_RETURN_DISTANCE = 30, -- Distance from center before returning
+	PHASE_TRANSITION_DELAY = 2.0, -- Delay between phases
+	INVULNERABLE_TIME = 1.0, -- Brief invulnerability after taking damage
+
+	-- Attack settings
+	BASE_DAMAGE = 1, -- FIXED: Reduced from 2 to 1 (1 hit instead of 1 full heart)
+	PROJECTILE_SPEED = 30,
+	SUMMON_DELAY = 0.5,
+
+	-- Visual effects
+	BOSS_AURA_SIZE = 10,
+	SCREEN_SHAKE_INTENSITY = 5,
+	PHASE_TRANSITION_EFFECT_TIME = 3.0
+}
+
+-- ========================================================================
+-- BOSS DEFINITIONS (Isaac-Style)
+-- ========================================================================
+
+local BOSS_TYPES = {
+	-- ===================
+	-- MONSTRO - Classic Isaac Boss
+	-- ===================
+	MONSTRO = {
+		name = "Monstro",
+		maxHealth = 200,
+		phases = {
+			-- Phase 1: Jump attacks and single shots (100% - 60% health)
+			{
+				healthThreshold = 0.6,
+				name = "Aggressive Phase",
+				attacks = {
+					{name = "JumpSlam", weight = 25, cooldown = 5.0},  -- FIXED: Reduced weight and increased cooldown
+					{name = "SingleShot", weight = 40, cooldown = 1.5},  -- Increased weight to make it more common
+					{name = "BloodTears", weight = 35, cooldown = 2.0}  -- Increased weight
+				},
+				behavior = "AGGRESSIVE",
+				moveSpeed = 12,
+				attackFrequency = 2.0
+			},
+			-- Phase 2: Rapid attacks and spawning (60% - 20% health)
+			{
+				healthThreshold = 0.2,
+				name = "Enraged Phase",
+				attacks = {
+					{name = "JumpSlam", weight = 30, cooldown = 4.0},  -- FIXED: Reduced cooldown but still less frequent
+					{name = "RapidShots", weight = 45, cooldown = 2.5},  -- Increased weight
+					{name = "SpawnFlies", weight = 25, cooldown = 8.0}
+				},
+				behavior = "ENRAGED",
+				moveSpeed = 16,
+				attackFrequency = 1.2
+			},
+			-- Phase 3: Desperate final attacks (20% - 0% health)
+			{
+				healthThreshold = 0.0,
+				name = "Desperate Phase",
+				attacks = {
+					{name = "DeathJumps", weight = 40, cooldown = 3.0},  -- FIXED: Reduced weight and increased cooldown
+					{name = "BloodBarrage", weight = 60, cooldown = 3.0}  -- Increased weight
+				},
+				behavior = "DESPERATE",
+				moveSpeed = 20,
+				attackFrequency = 0.8
+			}
+		},
+		roomCenterAffinity = 0.7, -- Tends to stay near room center
+		specialMechanics = {"JumpDamage", "BloodTrails", "FlySpawning"}
+	},
+
+	-- ===================
+	-- LARRY JR. - Multi-segment boss
+	-- ===================
+	LARRY_JR = {
+		name = "Larry Jr.",
+		maxHealth = 150,
+		isSegmented = true, -- Special flag for segmented bosses
+		phases = {
+			-- Phase 1: Full segments (100% - 40% health)
+			{
+				healthThreshold = 0.4,
+				name = "Full Length",
+				attacks = {
+					{name = "SegmentChase", weight = 50, cooldown = 0.0}, -- Continuous
+					{name = "CornerBounce", weight = 30, cooldown = 4.0},
+					{name = "SegmentSpit", weight = 20, cooldown = 2.0}
+				},
+				behavior = "CHASE",
+				moveSpeed = 14,
+				attackFrequency = 1.5
+			},
+			-- Phase 2: Broken segments, faster movement (40% - 0% health)
+			{
+				healthThreshold = 0.0,
+				name = "Broken Chain",
+				attacks = {
+					{name = "ErratiChase", weight = 60, cooldown = 0.0},
+					{name = "SegmentSpray", weight = 40, cooldown = 1.5}
+				},
+				behavior = "ERRATIC",
+				moveSpeed = 22,
+				attackFrequency = 1.0
+			}
+		},
+		roomCenterAffinity = 0.3, -- Prefers room edges
+		specialMechanics = {"Segmentation", "WallBouncing"}
+	},
+
+	-- ===================
+	-- CUSTOM BOSS TEMPLATE
+	-- ===================
+	CUSTOM_TERROR = {
+		name = "The Terror",
+		maxHealth = 300,
+		phases = {
+			-- Phase 1: Ranged attacks (100% - 50% health)
+			{
+				healthThreshold = 0.5,
+				name = "Ranged Assault",
+				attacks = {
+					{name = "TearBarrage", weight = 40, cooldown = 2.0},
+					{name = "CircleShot", weight = 30, cooldown = 3.0},
+					{name = "Teleport", weight = 20, cooldown = 5.0}
+				},
+				behavior = "RANGED",
+				moveSpeed = 8,
+				attackFrequency = 1.8
+			},
+			-- Phase 2: Mixed attacks with minions (50% - 0% health)
+			{
+				healthThreshold = 0.0,
+				name = "Final Chaos",
+				attacks = {
+					{name = "SummonWave", weight = 50, cooldown = 6.0},
+					{name = "DeathLaser", weight = 35, cooldown = 4.0},
+					{name = "TeleportStrike", weight = 25, cooldown = 2.5}
+				},
+				behavior = "CHAOS",
+				moveSpeed = 12,
+				attackFrequency = 1.0
+			}
+		},
+		roomCenterAffinity = 0.5,
+		specialMechanics = {"Teleportation", "MinionSummoning", "LaserAttacks"}
+	}
+}
+
+-- ========================================================================
+-- BOSS AI MANAGER CLASS
+-- ========================================================================
+
+local BossAIManager = {}
+BossAIManager.__index = BossAIManager
+
+function BossAIManager.new()
+	local self = setmetatable({}, BossAIManager)
+
+	self.activeBosses = {} -- Track active boss instances
+	self.bossInstances = {} -- Boss AI instances
+	self.updateConnections = {}
+
+	self:initializeBossAI()
+
+	return self
+end
+
+function BossAIManager:initializeBossAI()
+	print("👑 Initializing Boss AI System...")
+
+	-- Setup boss detection
+	for bossType, config in pairs(BOSS_TYPES) do
+		self:setupBossType(bossType, config)
+	end
+
+	-- Start boss update loop
+	self:startBossUpdateLoop()
+
+	print("✅ Boss AI System initialized with", self:countBossTypes(), "boss types")
+end
+
+function BossAIManager:setupBossType(bossType, config)
+	local tag = "Boss_" .. bossType
+	print("👑 Setting up boss type:", config.name, "with tag:", tag)
+
+	-- Listen for new boss spawns
+	CollectionService:GetInstanceAddedSignal(tag):Connect(function(boss)
+		self:registerBoss(boss, bossType, config)
+	end)
+
+	-- Check for existing bosses
+	for _, boss in pairs(CollectionService:GetTagged(tag)) do
+		self:registerBoss(boss, bossType, config)
+	end
+end
+
+-- ========================================================================
+-- BOSS REGISTRATION AND MANAGEMENT
+-- ========================================================================
+
+function BossAIManager:registerBoss(boss, bossType, config)
+	if not boss:FindFirstChild("Humanoid") then
+		warn("❌ Boss missing Humanoid:", boss.Name)
+		return
+	end
+
+	print("👑 Registering boss:", boss.Name, "as", config.name)
+
+	-- Create boss AI instance
+	local bossAI = self:createBossAI(boss, bossType, config)
+
+	-- Store references
+	self.activeBosses[boss] = bossAI
+	table.insert(self.bossInstances, bossAI)
+
+	-- Setup death detection
+	local humanoid = boss:FindFirstChild("Humanoid")
+	if humanoid then
+		humanoid.Died:Connect(function()
+			self:onBossDeath(boss, bossAI)
+		end)
+	end
+
+	-- Boss entrance effect
+	self:playBossEntranceEffect(bossAI)
+
+	print("👑 Boss AI activated for:", config.name)
+end
+
+function BossAIManager:createBossAI(boss, bossType, config)
+	local bossAI = {
+		-- Core properties
+		boss = boss,
+		bossType = bossType,
+		config = config,
+
+		-- State tracking
+		currentPhase = 1,
+		maxHealth = config.maxHealth,
+		currentHealth = config.maxHealth,
+		isInvulnerable = false,
+		lastAttackTime = 0,
+		lastMoveTime = 0,
+
+		-- Target tracking
+		currentTarget = nil,
+		lastKnownPlayerPos = nil,
+		roomCenter = nil,
+
+		-- Attack state
+		isAttacking = false,
+		currentAttack = nil,
+		attackCooldowns = {},
+
+		-- Movement state
+		targetPosition = nil,
+		isMoving = false,
+
+		-- Special mechanics
+		segments = {}, -- For segmented bosses like Larry Jr.
+		minions = {}, -- For bosses that spawn minions
+
+		-- Timing
+		lastUpdate = 0,
+		phaseTransitionTime = 0
+	}
+
+	-- Initialize boss
+	self:initializeBoss(bossAI)
+
+	return bossAI
+end
+
+function BossAIManager:initializeBoss(bossAI)
+	local boss = bossAI.boss
+	local humanoid = boss:FindFirstChild("Humanoid")
+
+	if humanoid then
+		-- Set boss health
+		humanoid.MaxHealth = bossAI.maxHealth
+		humanoid.Health = bossAI.maxHealth
+		bossAI.currentHealth = bossAI.maxHealth
+
+		-- Boss movement settings
+		humanoid.WalkSpeed = bossAI.config.phases[1].moveSpeed
+	end
+
+	-- Find room center
+	bossAI.roomCenter = self:findRoomCenter(boss)
+
+	-- Initialize attack cooldowns
+	for _, phase in pairs(bossAI.config.phases) do
+		for _, attack in pairs(phase.attacks) do
+			bossAI.attackCooldowns[attack.name] = 0
+		end
+	end
+
+	-- Setup boss-specific initialization
+	if bossAI.bossType == "LARRY_JR" then
+		self:initializeLarryJr(bossAI)
+	end
+
+	print("👑 Boss initialized:", bossAI.config.name)
+end
+
+-- ========================================================================
+-- BOSS UPDATE LOOP
+-- ========================================================================
+
+function BossAIManager:startBossUpdateLoop()
+	print("🔄 Starting boss AI update loop...")
+
+	self.updateConnections.mainLoop = RunService.Heartbeat:Connect(function()
+		local currentTime = tick()
+
+		-- Update all active bosses
+		for boss, bossAI in pairs(self.activeBosses) do
+			if boss and boss.Parent then
+				local success, error = pcall(function()
+					self:updateBossAI(bossAI, currentTime)
+				end)
+
+				if not success then
+					warn("❌ Boss AI update error for", boss.Name, ":", error)
+				end
+			else
+				-- Clean up removed bosses
+				self:unregisterBoss(boss)
+			end
+		end
+	end)
+end
+
+function BossAIManager:updateBossAI(bossAI, currentTime)
+	local boss = bossAI.boss
+	local humanoid = boss:FindFirstChild("Humanoid")
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+	-- Safety checks
+	if not humanoid or not rootPart or humanoid.Health <= 0 then
+		return
+	end
+
+	-- FIXED: Periodic integrity check to prevent separation
+	if currentTime - (bossAI.lastIntegrityCheck or 0) > 2.0 then
+		self:ensureBossIntegrity(boss)
+		bossAI.lastIntegrityCheck = currentTime
+	end
+
+	-- Update boss health tracking
+	self:updateBossHealth(bossAI)
+
+	-- Check for phase transitions
+	self:checkPhaseTransition(bossAI)
+
+	-- Find and track target
+	self:updateBossTarget(bossAI)
+
+	-- Update boss behavior based on current phase
+	self:updateBossBehavior(bossAI, currentTime)
+
+	-- Update attack system
+	self:updateBossAttacks(bossAI, currentTime)
+
+	-- Update special mechanics
+	self:updateSpecialMechanics(bossAI, currentTime)
+
+	bossAI.lastUpdate = currentTime
+end
+
+-- ========================================================================
+-- BOSS HEALTH AND PHASE MANAGEMENT
+-- ========================================================================
+
+function BossAIManager:updateBossHealth(bossAI)
+	local humanoid = bossAI.boss:FindFirstChild("Humanoid")
+	if not humanoid then return end
+
+	local oldHealth = bossAI.currentHealth
+	bossAI.currentHealth = humanoid.Health
+
+	-- Check if boss took damage
+	if bossAI.currentHealth < oldHealth then
+		self:onBossDamaged(bossAI, oldHealth - bossAI.currentHealth)
+	end
+end
+
+function BossAIManager:checkPhaseTransition(bossAI)
+	local healthPercentage = bossAI.currentHealth / bossAI.maxHealth
+	local currentPhase = bossAI.config.phases[bossAI.currentPhase]
+
+	-- Check if we should transition to next phase
+	if healthPercentage <= currentPhase.healthThreshold and bossAI.currentPhase < #bossAI.config.phases then
+		self:transitionBossPhase(bossAI, bossAI.currentPhase + 1)
+	end
+end
+
+function BossAIManager:transitionBossPhase(bossAI, newPhase)
+	print("👑 PHASE TRANSITION:", bossAI.config.name, "→ Phase", newPhase)
+
+	local oldPhase = bossAI.currentPhase
+	bossAI.currentPhase = newPhase
+	bossAI.phaseTransitionTime = tick()
+	bossAI.isInvulnerable = true
+
+	local newPhaseConfig = bossAI.config.phases[newPhase]
+	local boss = bossAI.boss
+	local humanoid = boss:FindFirstChild("Humanoid")
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+	-- FIXED: Ensure boss integrity during phase transition
+	if humanoid and rootPart then
+		-- Stop any current movement
+		humanoid:MoveTo(rootPart.Position)
+		humanoid.PlatformStand = false  -- Make sure humanoid is active
+
+		-- FIXED: Ensure all body parts stay connected
+		if not boss.PrimaryPart then
+			boss.PrimaryPart = rootPart
+		end
+
+		-- FIXED: Re-establish joints if needed
+		self:ensureBossIntegrity(boss)
+
+		-- Update boss stats for new phase
+		humanoid.WalkSpeed = newPhaseConfig.moveSpeed
+
+		-- FIXED: Reset any stuck physics states
+		rootPart.Anchored = false
+		rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+		rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+	end
+
+	-- Play phase transition effects
+	self:playPhaseTransitionEffect(bossAI, oldPhase, newPhase)
+
+	-- End invulnerability after delay
+	task.spawn(function()
+		task.wait(BOSS_CONFIG.PHASE_TRANSITION_DELAY)
+		if bossAI and bossAI.boss and bossAI.boss.Parent then
+			bossAI.isInvulnerable = false
+			print("👑 Phase transition complete:", newPhaseConfig.name)
+		end
+	end)
+end
+
+-- FIXED: New function to ensure boss doesn't become invisible
+function BossAIManager:ensureBossVisibility(boss)
+	print("👀 Ensuring boss visibility...")
+
+	-- Make sure all boss parts are visible
+	for _, part in pairs(boss:GetDescendants()) do
+		if part:IsA("BasePart") then
+			-- Reset transparency to make sure boss is visible
+			if part.Name == "HumanoidRootPart" then
+				part.Transparency = 0.5  -- Root part slightly transparent but visible
+			else
+				part.Transparency = 0    -- All other parts fully visible
+			end
+
+			-- Ensure parts are properly colored and not corrupted
+			if part.Name == "Head" then
+				part.Color = Color3.fromRGB(200, 100, 100)
+			elseif part.Name == "Torso" or part.Name == "HumanoidRootPart" then
+				part.Color = Color3.fromRGB(150, 50, 50)
+			end
+
+			-- Ensure material is set
+			part.Material = Enum.Material.Neon
+		end
+	end
+
+	-- Verify humanoid state
+	local humanoid = boss:FindFirstChild("Humanoid")
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+	if humanoid and rootPart then
+		-- Reset physics states that might cause issues
+		humanoid.PlatformStand = false
+		humanoid:ChangeState(Enum.HumanoidStateType.Running)
+
+		-- Ensure root part is properly set
+		rootPart.Anchored = false
+		rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+		rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+		-- Make sure PrimaryPart is set
+		if not boss.PrimaryPart then
+			boss.PrimaryPart = rootPart
+		end
+	end
+
+	print("✅ Boss visibility restored")
+end
+-- FIXED: New function to ensure boss doesn't fall apart
+function BossAIManager:ensureBossIntegrity(boss)
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	local head = boss:FindFirstChild("Head")
+	local torso = boss:FindFirstChild("Torso")
+
+	if not rootPart then return end
+
+	-- FIXED: Re-create essential joints if missing
+	if head and not rootPart:FindFirstChild("Neck") then
+		local neck = Instance.new("Motor6D")
+		neck.Name = "Neck"
+		neck.Part0 = rootPart
+		neck.Part1 = head
+		neck.C0 = CFrame.new(0, 3, 0)
+		neck.C1 = CFrame.new(0, -1.5, 0)
+		neck.Parent = rootPart
+		print("👑 Recreated Neck joint for boss")
+	end
+
+	if torso and not rootPart:FindFirstChild("RootJoint") then
+		local rootJoint = Instance.new("Motor6D")
+		rootJoint.Name = "RootJoint"
+		rootJoint.Part0 = rootPart
+		rootJoint.Part1 = torso
+		rootJoint.C0 = CFrame.new(0, 0, 0)
+		rootJoint.C1 = CFrame.new(0, 0, 0)
+		rootJoint.Parent = rootPart
+		print("👑 Recreated RootJoint for boss")
+	end
+
+	-- FIXED: Ensure all parts are properly positioned relative to root
+	if head then
+		local neck = rootPart:FindFirstChild("Neck")
+		if neck then
+			head.CFrame = rootPart.CFrame * neck.C0 * neck.C1:Inverse()
+		end
+	end
+
+	if torso then
+		local rootJoint = rootPart:FindFirstChild("RootJoint")
+		if rootJoint then
+			torso.CFrame = rootPart.CFrame * rootJoint.C0 * rootJoint.C1:Inverse()
+		end
+	end
+
+	-- FIXED: Also ensure visibility when checking integrity
+	self:ensureBossVisibility(boss)
+end
+
+-- ========================================================================
+-- BOSS TARGETING AND MOVEMENT
+-- ========================================================================
+
+function BossAIManager:updateBossTarget(bossAI)
+	local boss = bossAI.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Find nearest player
+	local nearestPlayer = self:findNearestPlayer(rootPart.Position)
+	if nearestPlayer and nearestPlayer.Character and nearestPlayer.Character:FindFirstChild("HumanoidRootPart") then
+		local distance = (nearestPlayer.Character.HumanoidRootPart.Position - rootPart.Position).Magnitude
+
+		if distance <= BOSS_CONFIG.DETECTION_RANGE then
+			bossAI.currentTarget = nearestPlayer
+			bossAI.lastKnownPlayerPos = nearestPlayer.Character.HumanoidRootPart.Position
+		else
+			bossAI.currentTarget = nil
+		end
+	else
+		bossAI.currentTarget = nil
+	end
+end
+
+function BossAIManager:updateBossBehavior(bossAI, currentTime)
+	if not bossAI.currentTarget or bossAI.isAttacking then
+		return
+	end
+
+	local currentPhase = bossAI.config.phases[bossAI.currentPhase]
+	local behavior = currentPhase.behavior
+
+	if behavior == "AGGRESSIVE" then
+		self:updateAggressiveBehavior(bossAI)
+	elseif behavior == "ENRAGED" then
+		self:updateEnragedBehavior(bossAI)
+	elseif behavior == "DESPERATE" then
+		self:updateDesperateBehavior(bossAI)
+	elseif behavior == "CHASE" then
+		self:updateChaseBehavior(bossAI)
+	elseif behavior == "RANGED" then
+		self:updateRangedBehavior(bossAI)
+	elseif behavior == "CHAOS" then
+		self:updateChaosBehavior(bossAI)
+	end
+end
+
+function BossAIManager:updateAggressiveBehavior(bossAI)
+	-- Move toward player with some room center preference
+	local targetPos = bossAI.lastKnownPlayerPos
+	local roomCenter = bossAI.roomCenter
+	local centerAffinity = bossAI.config.roomCenterAffinity
+
+	if targetPos and roomCenter then
+		-- Blend between player position and room center
+		local blendedTarget = targetPos:Lerp(roomCenter, centerAffinity)
+		self:moveBossToward(bossAI, blendedTarget)
+	end
+end
+
+function BossAIManager:updateEnragedBehavior(bossAI)
+	-- More direct pursuit of player
+	if bossAI.lastKnownPlayerPos then
+		self:moveBossToward(bossAI, bossAI.lastKnownPlayerPos)
+	end
+end
+
+function BossAIManager:updateDesperateBehavior(bossAI)
+	-- Erratic movement with quick direction changes
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	if not bossAI.targetPosition or (rootPart.Position - bossAI.targetPosition).Magnitude < 5 then
+		-- Pick new random position near player
+		if bossAI.lastKnownPlayerPos then
+			local randomOffset = Vector3.new(
+				(math.random() - 0.5) * 20,
+				0,
+				(math.random() - 0.5) * 20
+			)
+			bossAI.targetPosition = bossAI.lastKnownPlayerPos + randomOffset
+		end
+	end
+
+	if bossAI.targetPosition then
+		self:moveBossToward(bossAI, bossAI.targetPosition)
+	end
+end
+
+function BossAIManager:updateChaseBehavior(bossAI)
+	-- Direct chase behavior (for Larry Jr.)
+	if bossAI.lastKnownPlayerPos then
+		self:moveBossToward(bossAI, bossAI.lastKnownPlayerPos)
+	end
+end
+
+function BossAIManager:updateRangedBehavior(bossAI)
+	-- Maintain distance while staying mobile
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not bossAI.lastKnownPlayerPos then return end
+
+	local distance = (bossAI.lastKnownPlayerPos - rootPart.Position).Magnitude
+	local optimalDistance = 25
+
+	if distance < optimalDistance then
+		-- Move away from player
+		local direction = (rootPart.Position - bossAI.lastKnownPlayerPos).Unit
+		local retreatPos = rootPart.Position + direction * 15
+		self:moveBossToward(bossAI, retreatPos)
+	elseif distance > optimalDistance + 10 then
+		-- Move closer to player
+		self:moveBossToward(bossAI, bossAI.lastKnownPlayerPos)
+	else
+		-- Strafe around player
+		self:strafeBoss(bossAI)
+	end
+end
+
+function BossAIManager:updateChaosBehavior(bossAI)
+	-- Random teleportation and unpredictable movement
+	local currentTime = tick()
+	if currentTime - bossAI.lastMoveTime > 2.0 then
+		-- Teleport to random position
+		self:teleportBoss(bossAI)
+		bossAI.lastMoveTime = currentTime
+	end
+end
+
+-- ========================================================================
+-- BOSS MOVEMENT FUNCTIONS
+-- ========================================================================
+
+function BossAIManager:moveBossToward(bossAI, targetPosition)
+	local humanoid = bossAI.boss:FindFirstChild("Humanoid")
+	if humanoid then
+		humanoid:MoveTo(targetPosition)
+	end
+end
+
+function BossAIManager:strafeBoss(bossAI)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not bossAI.lastKnownPlayerPos then return end
+
+	-- Calculate strafe direction (perpendicular to player direction)
+	local toPlayer = (bossAI.lastKnownPlayerPos - rootPart.Position).Unit
+	local strafeDirection = Vector3.new(-toPlayer.Z, 0, toPlayer.X)
+
+	-- Randomly choose left or right strafe
+	if math.random() > 0.5 then
+		strafeDirection = -strafeDirection
+	end
+
+	local strafeTarget = rootPart.Position + strafeDirection * 15
+	self:moveBossToward(bossAI, strafeTarget)
+end
+
+function BossAIManager:teleportBoss(bossAI)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not bossAI.roomCenter then return end
+
+	-- Choose random position in room
+	local teleportPos = bossAI.roomCenter + Vector3.new(
+		(math.random() - 0.5) * 30,
+		0,
+		(math.random() - 0.5) * 20
+	)
+
+	-- Teleport effect
+	self:createTeleportEffect(rootPart.Position)
+	rootPart.Position = teleportPos
+	self:createTeleportEffect(teleportPos)
+
+	print("👑 Boss teleported to:", teleportPos)
+end
+
+-- ========================================================================
+-- BOSS ATTACK SYSTEM
+-- ========================================================================
+
+function BossAIManager:updateBossAttacks(bossAI, currentTime)
+	if bossAI.isAttacking or not bossAI.currentTarget then
+		return
+	end
+
+	local currentPhase = bossAI.config.phases[bossAI.currentPhase]
+	local timeSinceLastAttack = currentTime - bossAI.lastAttackTime
+
+	-- Check if enough time has passed for next attack
+	if timeSinceLastAttack >= currentPhase.attackFrequency then
+		self:selectAndExecuteBossAttack(bossAI, currentTime)
+	end
+end
+
+function BossAIManager:selectAndExecuteBossAttack(bossAI, currentTime)
+	local currentPhase = bossAI.config.phases[bossAI.currentPhase]
+	local availableAttacks = {}
+
+	-- Filter attacks by cooldown
+	for _, attack in pairs(currentPhase.attacks) do
+		local lastUsed = bossAI.attackCooldowns[attack.name] or 0
+		if currentTime - lastUsed >= attack.cooldown then
+			table.insert(availableAttacks, attack)
+		end
+	end
+
+	if #availableAttacks == 0 then
+		return -- No attacks available
+	end
+
+	-- Select attack based on weight
+	local selectedAttack = self:selectWeightedAttack(availableAttacks)
+
+	if selectedAttack then
+		self:executeBossAttack(bossAI, selectedAttack, currentTime)
+	end
+end
+
+function BossAIManager:selectWeightedAttack(attacks)
+	local totalWeight = 0
+	for _, attack in pairs(attacks) do
+		totalWeight = totalWeight + attack.weight
+	end
+
+	local randomValue = math.random() * totalWeight
+	local currentWeight = 0
+
+	for _, attack in pairs(attacks) do
+		currentWeight = currentWeight + attack.weight
+		if randomValue <= currentWeight then
+			return attack
+		end
+	end
+
+	return attacks[1] -- Fallback
+end
+
+function BossAIManager:executeBossAttack(bossAI, attack, currentTime)
+	print("👑 BOSS ATTACK:", bossAI.config.name, "uses", attack.name)
+
+	bossAI.isAttacking = true
+	bossAI.currentAttack = attack
+	bossAI.lastAttackTime = currentTime
+	bossAI.attackCooldowns[attack.name] = currentTime
+
+	-- Execute specific attack
+	if attack.name == "JumpSlam" then
+		self:executeJumpSlam(bossAI)
+	elseif attack.name == "SingleShot" then
+		self:executeSingleShot(bossAI)
+	elseif attack.name == "BloodTears" then
+		self:executeBloodTears(bossAI)
+	elseif attack.name == "RapidShots" then
+		self:executeRapidShots(bossAI)
+	elseif attack.name == "SpawnFlies" then
+		self:executeSpawnFlies(bossAI)
+	elseif attack.name == "DeathJumps" then
+		self:executeDeathJumps(bossAI)
+	elseif attack.name == "BloodBarrage" then
+		self:executeBloodBarrage(bossAI)
+	elseif attack.name == "TearBarrage" then
+		self:executeTearBarrage(bossAI)
+	elseif attack.name == "CircleShot" then
+		self:executeCircleShot(bossAI)
+	elseif attack.name == "SummonWave" then
+		self:executeSummonWave(bossAI)
+	elseif attack.name == "DeathLaser" then
+		self:executeDeathLaser(bossAI)
+	else
+		print("⚠️ Unknown attack:", attack.name)
+		bossAI.isAttacking = false
+	end
+end
+
+-- ========================================================================
+-- SPECIFIC BOSS ATTACKS (Isaac-Style)
+-- ========================================================================
+
+function BossAIManager:executeJumpSlam(bossAI)
+	local boss = bossAI.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	local humanoid = boss:FindFirstChild("Humanoid")
+
+	if not rootPart or not humanoid or not bossAI.lastKnownPlayerPos then
+		bossAI.isAttacking = false
+		return
+	end
+
+	-- Phase 1: Telegraph jump
+	self:createAttackTelegraph(bossAI.lastKnownPlayerPos, 1.5)
+
+	-- Phase 2: Jump to target after delay
+	task.spawn(function()
+		task.wait(1.0) -- Telegraph time
+
+		if not boss.Parent or not rootPart.Parent then return end
+
+		print("👑 Starting boss jump attack...")
+
+		-- FIXED: Use the same approach as your leaper script
+		-- Critical: Check and fix physics properties that prevent jumping
+		if rootPart.Anchored then
+			print("❌ Root part is anchored! Cannot jump!")
+			rootPart.Anchored = false
+		end
+
+		-- CRITICAL: Disable PlatformStand which prevents movement
+		if humanoid.PlatformStand then
+			print("🔧 Disabling PlatformStand for jump")
+			humanoid.PlatformStand = false
+		end
+
+		-- CRITICAL: Set humanoid state to allow physics and disable ground sticking
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Flying, true)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+
+		-- CRITICAL: Temporarily put humanoid in Physics state to allow jumping
+		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
+		-- Calculate leap direction and force (similar to your leaper)
+		local currentPos = rootPart.Position
+		local targetPos = bossAI.lastKnownPlayerPos
+		local leapDirection = (targetPos - currentPos).Unit
+		local distance = (targetPos - currentPos).Magnitude
+
+		-- FIXED: Use consistent leap forces like your leaper script
+		local horizontalForce = 30 -- Strong horizontal force
+		local verticalForce = 35   -- Strong vertical force for boss (bigger than leaper)
+
+		print("🦘 Boss attempting leap with force:", horizontalForce, verticalForce, "Distance:", math.floor(distance))
+
+		-- Remove other conflicting body movers first
+		for _, child in pairs(rootPart:GetChildren()) do
+			if child:IsA("BodyVelocity") or child:IsA("BodyPosition") or child:IsA("BodyAngularVelocity") then
+				child:Destroy()
+			end
+		end
+
+		-- CRITICAL: Add rotational constraint to prevent falling over (from your script)
+		local bodyAngularVelocity = Instance.new("BodyAngularVelocity")
+		bodyAngularVelocity.AngularVelocity = Vector3.new(0, 0, 0) -- No rotation
+		bodyAngularVelocity.MaxTorque = Vector3.new(10000, 0, 10000) -- Lock X and Z rotation, allow Y turning
+		bodyAngularVelocity.Parent = rootPart
+
+		-- Use BodyVelocity for consistent jumps (same as your leaper)
+		local bodyVelocity = Instance.new("BodyVelocity")
+		bodyVelocity.MaxForce = Vector3.new(10000, 10000, 10000) -- High force like your script
+		bodyVelocity.Velocity = (leapDirection * horizontalForce) + Vector3.new(0, verticalForce, 0)
+		bodyVelocity.Parent = rootPart
+
+		print("🦘 BodyVelocity applied with velocity:", bodyVelocity.Velocity)
+
+		-- Also try direct AssemblyLinearVelocity as backup (from your script)
+		task.spawn(function()
+			task.wait(0.05) -- Very short wait
+			print("🦘 Root part AssemblyLinearVelocity after BV:", rootPart.AssemblyLinearVelocity)
+			print("🦘 Root part Position after 0.05s:", rootPart.Position)
+
+			-- If BodyVelocity isn't working vertically, force it with AssemblyLinearVelocity
+			if math.abs(rootPart.AssemblyLinearVelocity.Y) < 10 then
+				print("🔧 Vertical velocity too low, forcing with AssemblyLinearVelocity")
+				rootPart.AssemblyLinearVelocity = (leapDirection * horizontalForce) + Vector3.new(0, verticalForce, 0)
+
+				-- Also force humanoid into Physics state again
+				humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+			end
+		end)
+
+		-- Clean up BodyVelocity and rotational constraint after enough time for the jump
+		game:GetService("Debris"):AddItem(bodyVelocity, 1.5)
+		game:GetService("Debris"):AddItem(bodyAngularVelocity, 1.5)
+
+		-- IMMEDIATE reset after BodyVelocity expires to prevent sliding (from your script)
+		task.spawn(function()
+			task.wait(1.6) -- Slightly after BodyVelocity is destroyed
+			if bossAI and bossAI.boss and bossAI.boss.Parent and rootPart then
+				-- Force stop all movement
+				rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+				-- Force humanoid back to normal
+				if humanoid then
+					humanoid:ChangeState(Enum.HumanoidStateType.Running)
+					humanoid.PlatformStand = false
+				end
+
+				print("🛑 Force stopped sliding after leap")
+			end
+		end)
+
+		-- Monitor leap progress and detect landing
+		task.spawn(function()
+			local leapStartTime = tick()
+			local startPos = rootPart.Position
+			local landingDetected = false
+
+			while bossAI and bossAI.boss and bossAI.boss.Parent and not landingDetected do
+				task.wait(0.1)
+				local currentLeapPos = rootPart.Position
+				local leapDistance = (currentLeapPos - startPos).Magnitude
+
+				print("🦘 Leap progress - Distance moved:", math.floor(leapDistance), "Height:", math.floor(currentLeapPos.Y), "Velocity Y:", math.floor(rootPart.AssemblyLinearVelocity.Y))
+
+				-- Check if boss has landed (similar to your script's logic)
+				local velocity = rootPart.AssemblyLinearVelocity
+				local elapsed = tick() - leapStartTime
+
+				if elapsed > 0.5 and velocity.Y < 5 then
+					-- Raycast to check ground distance
+					local raycastParams = RaycastParams.new()
+					raycastParams.FilterDescendantsInstances = {boss}
+
+					local raycast = workspace:Raycast(rootPart.Position, Vector3.new(0, -10, 0), raycastParams)
+					if raycast and raycast.Distance < 5 then
+						landingDetected = true
+						print("💥 Boss landed! Creating impact effects...")
+
+						-- FIXED: Ensure boss visibility after landing
+						self:ensureBossVisibility(boss)
+
+						-- Impact effect and damage (reduced damage)
+						self:createJumpImpactEffect(rootPart.Position)
+						self:dealAreaDamage(rootPart.Position, 12, BOSS_CONFIG.BASE_DAMAGE)  -- FIXED: Reduced radius from 15 to 12
+
+						print("🦘 Leap completed successfully")
+						break
+					end
+				end
+
+				-- Timeout for safety (shorter timeout like your script)
+				if elapsed > 2.5 then
+					landingDetected = true
+					print("🦘 Leap timeout")
+
+					-- FIXED: Ensure boss visibility on timeout too
+					self:ensureBossVisibility(boss)
+
+					-- Emergency impact at current position (reduced damage)
+					self:createJumpImpactEffect(rootPart.Position)
+					self:dealAreaDamage(rootPart.Position, 12, BOSS_CONFIG.BASE_DAMAGE)  -- FIXED: Reduced radius
+					break
+				end
+			end
+
+			-- Reset attack state
+			task.wait(0.5)
+			if bossAI and bossAI.boss and bossAI.boss.Parent then
+				bossAI.isAttacking = false
+				print("👑 Boss jump attack complete")
+			end
+		end)
+	end)
+end
+
+function BossAIManager:executeSingleShot(bossAI)
+	if not bossAI.lastKnownPlayerPos then
+		bossAI.isAttacking = false
+		return
+	end
+
+	-- FIXED: Always use actual boss position, not aura position
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		bossAI.isAttacking = false
+		return
+	end
+
+	local shootPos = rootPart.Position + Vector3.new(0, 2, 0)  -- Shoot from boss center
+	local targetPos = bossAI.lastKnownPlayerPos
+
+	print("👑 Boss shooting from:", shootPos, "to:", targetPos)
+
+	-- Fire single projectile at player
+	self:createBossProjectile(
+		shootPos,
+		targetPos,
+		BOSS_CONFIG.PROJECTILE_SPEED,
+		BOSS_CONFIG.BASE_DAMAGE,
+		"BossProjectile"
+	)
+
+	task.wait(0.5)
+	bossAI.isAttacking = false
+end
+
+function BossAIManager:executeRapidShots(bossAI)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not bossAI.lastKnownPlayerPos then
+		bossAI.isAttacking = false
+		return
+	end
+
+	-- FIXED: Always use actual boss position for all shots
+	local shootPos = rootPart.Position + Vector3.new(0, 2, 0)
+
+	-- Fire 5 rapid shots with slight spread
+	task.spawn(function()
+		for i = 1, 5 do
+			if not bossAI.boss.Parent then break end
+
+			-- Update shoot position each shot in case boss moved
+			local currentRootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+			if not currentRootPart then break end
+
+			local currentShootPos = currentRootPart.Position + Vector3.new(0, 2, 0)
+			local targetPos = bossAI.lastKnownPlayerPos
+
+			-- Add random spread
+			local spread = Vector3.new(
+				(math.random() - 0.5) * 10,
+				0,
+				(math.random() - 0.5) * 10
+			)
+			targetPos = targetPos + spread
+
+			print("👑 Rapid shot", i, "from:", currentShootPos)
+
+			self:createBossProjectile(
+				currentShootPos,
+				targetPos,
+				BOSS_CONFIG.PROJECTILE_SPEED * 1.2,
+				BOSS_CONFIG.BASE_DAMAGE,
+				"BossProjectile"
+			)
+
+			task.wait(0.2) -- Rapid fire delay
+		end
+
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeBloodTears(bossAI)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not bossAI.lastKnownPlayerPos then
+		bossAI.isAttacking = false
+		return
+	end
+
+	-- FIXED: Always use actual boss position
+	local shootPos = rootPart.Position + Vector3.new(0, 2, 0)
+
+	-- Fire 3 blood tears in an arc
+	task.spawn(function()
+		local centerDirection = (bossAI.lastKnownPlayerPos - shootPos).Unit
+
+		for i = -1, 1 do
+			if not bossAI.boss.Parent then break end
+
+			-- Update position for each shot
+			local currentRootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+			if not currentRootPart then break end
+
+			local currentShootPos = currentRootPart.Position + Vector3.new(0, 2, 0)
+
+			local angle = math.rad(i * 20) -- 20 degree spread
+			local direction = Vector3.new(
+				centerDirection.X * math.cos(angle) - centerDirection.Z * math.sin(angle),
+				0,
+				centerDirection.X * math.sin(angle) + centerDirection.Z * math.cos(angle)
+			)
+
+			local targetPos = currentShootPos + direction * 30
+
+			print("👑 Blood tear", i, "from:", currentShootPos)
+
+			self:createBossProjectile(
+				currentShootPos,
+				targetPos,
+				BOSS_CONFIG.PROJECTILE_SPEED * 0.8,
+				BOSS_CONFIG.BASE_DAMAGE,
+				"BloodTear"
+			)
+
+			task.wait(0.1)
+		end
+
+		task.wait(0.5)
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeSpawnFlies(bossAI)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		bossAI.isAttacking = false
+		return
+	end
+
+	-- Spawn 3-4 flies around the boss
+	task.spawn(function()
+		local flyCount = math.random(3, 4)
+
+		for i = 1, flyCount do
+			local angle = (i / flyCount) * math.pi * 2
+			local spawnPos = rootPart.Position + Vector3.new(
+				math.cos(angle) * 8,
+				3,
+				math.sin(angle) * 8
+			)
+
+			-- Spawn fly enemy (integrate with your enemy spawner)
+			self:spawnBossMinion("Fly", spawnPos, bossAI)
+
+			task.wait(BOSS_CONFIG.SUMMON_DELAY)
+		end
+
+		task.wait(1.0)
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeDeathJumps(bossAI)
+	-- Desperate phase - multiple rapid jumps
+	task.spawn(function()
+		for i = 1, 3 do
+			-- Quick jump to player position
+			if bossAI.lastKnownPlayerPos then
+				self:executeJumpSlam(bossAI)
+				task.wait(1.5) -- Wait for jump to complete
+			end
+		end
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeBloodBarrage(bossAI)
+	-- Desperate phase - spray projectiles everywhere
+	task.spawn(function()
+		local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+		if not rootPart then
+			bossAI.isAttacking = false
+			return
+		end
+
+		-- Fire 12 projectiles in all directions
+		for i = 1, 12 do
+			local angle = (i / 12) * math.pi * 2
+			local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+			local targetPos = rootPart.Position + direction * 25
+
+			self:createBossProjectile(
+				rootPart.Position + Vector3.new(0, 2, 0),
+				targetPos,
+				BOSS_CONFIG.PROJECTILE_SPEED,
+				BOSS_CONFIG.BASE_DAMAGE,
+				"BloodTear"
+			)
+
+			task.wait(0.1)
+		end
+
+		task.wait(0.5)
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeTearBarrage(bossAI)
+	-- Custom boss - rapid fire at player
+	self:executeRapidShots(bossAI) -- Reuse rapid shots
+end
+
+function BossAIManager:executeCircleShot(bossAI)
+	-- Custom boss - circular shot pattern
+	task.spawn(function()
+		local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+		if not rootPart then
+			bossAI.isAttacking = false
+			return
+		end
+
+		-- Fire 8 projectiles in a circle
+		for i = 1, 8 do
+			local angle = (i / 8) * math.pi * 2
+			local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+			local targetPos = rootPart.Position + direction * 20
+
+			self:createBossProjectile(
+				rootPart.Position + Vector3.new(0, 3, 0),
+				targetPos,
+				BOSS_CONFIG.PROJECTILE_SPEED * 0.7,
+				BOSS_CONFIG.BASE_DAMAGE,
+				"EnergyBlast"
+			)
+		end
+
+		task.wait(1.0)
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeSummonWave(bossAI)
+	-- Custom boss - summon multiple enemies
+	task.spawn(function()
+		local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+		if not rootPart then
+			bossAI.isAttacking = false
+			return
+		end
+
+		-- Summon 4 enemies in corners
+		local positions = {
+			rootPart.Position + Vector3.new(15, 0, 15),
+			rootPart.Position + Vector3.new(15, 0, -15),
+			rootPart.Position + Vector3.new(-15, 0, 15),
+			rootPart.Position + Vector3.new(-15, 0, -15)
+		}
+
+		for _, pos in pairs(positions) do
+			self:spawnBossMinion("Spider", pos, bossAI)
+			task.wait(0.3)
+		end
+
+		task.wait(1.5)
+		bossAI.isAttacking = false
+	end)
+end
+
+function BossAIManager:executeDeathLaser(bossAI)
+	-- Custom boss - laser beam attack
+	if not bossAI.lastKnownPlayerPos then
+		bossAI.isAttacking = false
+		return
+	end
+
+	task.spawn(function()
+		local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+		if not rootPart then
+			bossAI.isAttacking = false
+			return
+		end
+
+		-- Telegraph laser for 1 second
+		local laserDirection = (bossAI.lastKnownPlayerPos - rootPart.Position).Unit
+		self:createLaserTelegraph(rootPart.Position, laserDirection, 50, 1.0)
+
+		task.wait(1.0)
+
+		-- Fire actual laser
+		self:createLaserBeam(rootPart.Position, laserDirection, 50, BOSS_CONFIG.BASE_DAMAGE)
+
+		task.wait(0.5)
+		bossAI.isAttacking = false
+	end)
+end
+
+-- ========================================================================
+-- PROJECTILE AND EFFECT SYSTEMS
+-- ========================================================================
+
+function BossAIManager:createBossProjectile(startPos, targetPos, speed, damage, projectileType)
+	-- Create visual projectile
+	local projectile = Instance.new("Part")
+	projectile.Name = "BossProjectile"
+	projectile.Size = Vector3.new(2, 2, 2)
+	projectile.Shape = Enum.PartType.Ball
+	projectile.Material = Enum.Material.Neon
+	projectile.CanCollide = false
+	projectile.Anchored = true
+	projectile.Position = startPos
+
+	-- Color based on projectile type
+	if projectileType == "BloodTear" then
+		projectile.Color = Color3.fromRGB(200, 50, 50)
+	elseif projectileType == "EnergyBlast" then
+		projectile.Color = Color3.fromRGB(100, 100, 255)
+	else
+		projectile.Color = Color3.fromRGB(255, 100, 100)
+	end
+
+	projectile.Parent = workspace
+
+	-- Add glow effect
+	local light = Instance.new("PointLight")
+	light.Color = projectile.Color
+	light.Brightness = 2
+	light.Range = 8
+	light.Parent = projectile
+
+	-- Calculate direction and animate
+	local direction = (targetPos - startPos).Unit
+	local distance = (targetPos - startPos).Magnitude
+	local travelTime = distance / speed
+
+	-- Animate projectile movement
+	local tween = TweenService:Create(projectile,
+		TweenInfo.new(travelTime, Enum.EasingStyle.Linear),
+		{Position = targetPos}
+	)
+	tween:Play()
+
+	-- Check for collision during flight
+	task.spawn(function()
+		local startTime = tick()
+
+		while projectile.Parent and tick() - startTime < travelTime + 1.0 do
+			-- Check for player collision
+			for _, player in pairs(Players:GetPlayers()) do
+				if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+					local playerPos = player.Character.HumanoidRootPart.Position
+					local projectilePos = projectile.Position
+
+					if (playerPos - projectilePos).Magnitude < 3 then
+						-- Hit player
+						self:dealPlayerDamage(player, damage)
+						self:createProjectileImpactEffect(projectilePos)
+						projectile:Destroy()
+						return
+					end
+				end
+			end
+
+			task.wait(0.05)
+		end
+
+		-- Clean up projectile
+		if projectile.Parent then
+			projectile:Destroy()
+		end
+	end)
+end
+
+function BossAIManager:createLaserBeam(startPos, direction, length, damage)
+	-- Create laser beam visual
+	local laser = Instance.new("Part")
+	laser.Name = "BossLaser"
+	laser.Size = Vector3.new(2, 2, length)
+	laser.Material = Enum.Material.Neon
+	laser.Color = Color3.fromRGB(255, 50, 50)
+	laser.CanCollide = false
+	laser.Anchored = true
+
+	-- Position and orient laser
+	local endPos = startPos + direction * length
+	laser.CFrame = CFrame.lookAt(startPos, endPos) * CFrame.new(0, 0, -length/2)
+	laser.Parent = workspace
+
+	-- Damage players in laser path
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local playerPos = player.Character.HumanoidRootPart.Position
+
+			-- Check if player is in laser path
+			local toPlayer = playerPos - startPos
+			local projectedDistance = toPlayer:Dot(direction)
+
+			if projectedDistance > 0 and projectedDistance < length then
+				local closestPoint = startPos + direction * projectedDistance
+				local distanceFromLaser = (playerPos - closestPoint).Magnitude
+
+				if distanceFromLaser < 3 then
+					self:dealPlayerDamage(player, damage)
+				end
+			end
+		end
+	end
+
+	-- Remove laser after short duration
+	Debris:AddItem(laser, 0.3)
+end
+
+function BossAIManager:createLaserTelegraph(startPos, direction, length, duration)
+	-- Create telegraph beam
+	local telegraph = Instance.new("Part")
+	telegraph.Name = "LaserTelegraph"
+	telegraph.Size = Vector3.new(1, 1, length)
+	telegraph.Material = Enum.Material.ForceField
+	telegraph.Color = Color3.fromRGB(255, 255, 100)
+	telegraph.CanCollide = false
+	telegraph.Anchored = true
+	telegraph.Transparency = 0.5
+
+	-- Position telegraph
+	local endPos = startPos + direction * length
+	telegraph.CFrame = CFrame.lookAt(startPos, endPos) * CFrame.new(0, 0, -length/2)
+	telegraph.Parent = workspace
+
+	-- Animate telegraph (pulsing effect)
+	local pulseTween = TweenService:Create(telegraph,
+		TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{Transparency = 0.8}
+	)
+	pulseTween:Play()
+
+	-- Remove after duration
+	Debris:AddItem(telegraph, duration)
+end
+
+-- ========================================================================
+-- DAMAGE AND EFFECTS
+-- ========================================================================
+
+function BossAIManager:dealPlayerDamage(player, damage)
+	-- Use heart system if available
+	if ReplicatedStorage:FindFirstChild("SpikeHeartDamage") then
+		local damageEvent = ReplicatedStorage.SpikeHeartDamage
+		pcall(function()
+			damageEvent:FireClient(player, damage)
+			print("👑 Boss dealt", damage, "damage to", player.Name)
+		end)
+	else
+		-- Fallback to direct humanoid damage
+		if player.Character and player.Character:FindFirstChild("Humanoid") then
+			player.Character.Humanoid.Health = math.max(0, player.Character.Humanoid.Health - (damage * 5))
+		end
+	end
+end
+
+function BossAIManager:dealAreaDamage(position, radius, damage)
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local distance = (player.Character.HumanoidRootPart.Position - position).Magnitude
+			if distance <= radius then
+				self:dealPlayerDamage(player, damage)
+			end
+		end
+	end
+end
+
+function BossAIManager:spawnBossMinion(enemyType, position, bossAI)
+	-- Integrate with your enemy spawner
+	if _G.EnemySpawner then
+		local roomData = {
+			model = bossAI.boss.Parent,
+			roomType = "Boss",
+			roomID = "BossRoom"
+		}
+
+		local minion = _G.EnemySpawner:spawnEnemy(enemyType, position, roomData)
+		if minion then
+			table.insert(bossAI.minions, minion)
+			print("👑 Boss summoned:", enemyType)
+		end
+	else
+		print("⚠️ Enemy spawner not available for boss minions")
+	end
+end
+
+-- ========================================================================
+-- VISUAL EFFECTS
+-- ========================================================================
+
+function BossAIManager:createAttackTelegraph(position, duration)
+	-- Create warning indicator
+	local telegraph = Instance.new("Part")
+	telegraph.Name = "AttackTelegraph"
+	telegraph.Size = Vector3.new(12, 0.5, 12)  -- FIXED: Thin circular base
+	telegraph.Shape = Enum.PartType.Cylinder  -- FIXED: Use Cylinder for circular shape
+	telegraph.Material = Enum.Material.Neon
+	telegraph.Color = Color3.fromRGB(255, 50, 50)
+	telegraph.CanCollide = false
+	telegraph.Anchored = true
+	telegraph.Position = position + Vector3.new(0, 0.3, 0)  -- Slightly above ground
+	telegraph.Transparency = 0.3
+	-- FIXED: Rotate cylinder to lay flat (circular from above)
+	telegraph.Rotation = Vector3.new(0, 0, 90)  -- Rotate 90 degrees to make it horizontal
+	telegraph.Parent = workspace
+
+	-- FIXED: Add a second ring for better visibility
+	local outerRing = Instance.new("Part")
+	outerRing.Name = "OuterRing"
+	outerRing.Size = Vector3.new(15, 0.3, 15)
+	outerRing.Shape = Enum.PartType.Cylinder
+	outerRing.Material = Enum.Material.Neon
+	outerRing.Color = Color3.fromRGB(255, 100, 100)
+	outerRing.CanCollide = false
+	outerRing.Anchored = true
+	outerRing.Position = position + Vector3.new(0, 0.2, 0)
+	outerRing.Transparency = 0.6
+	outerRing.Rotation = Vector3.new(0, 0, 90)
+	outerRing.Parent = workspace
+
+	-- Pulsing animation for both rings
+	local pulseTween = TweenService:Create(telegraph,
+		TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{Transparency = 0.8, Size = Vector3.new(14, 0.5, 14)}
+	)
+
+	local outerPulseTween = TweenService:Create(outerRing,
+		TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{Transparency = 0.9, Size = Vector3.new(17, 0.3, 17)}
+	)
+
+	pulseTween:Play()
+	outerPulseTween:Play()
+
+	-- Remove after duration
+	game:GetService("Debris"):AddItem(telegraph, duration)
+	game:GetService("Debris"):AddItem(outerRing, duration)
+
+	print("👑 Created circular attack telegraph at:", position)
+end
+
+function BossAIManager:createJumpImpactEffect(position)
+	-- Create explosion effect
+	local explosion = Instance.new("Explosion")
+	explosion.Position = position
+	explosion.BlastRadius = 15
+	explosion.BlastPressure = 100000
+	explosion.Parent = workspace
+
+	-- Create shockwave
+	local shockwave = Instance.new("Part")
+	shockwave.Name = "Shockwave"
+	shockwave.Size = Vector3.new(2, 1, 2)
+	shockwave.Shape = Enum.PartType.Cylinder
+	shockwave.Material = Enum.Material.Neon
+	shockwave.Color = Color3.fromRGB(255, 100, 50)
+	shockwave.CanCollide = false
+	shockwave.Anchored = true
+	shockwave.Position = position
+	shockwave.Transparency = 0.5
+	shockwave.Parent = workspace
+
+	-- Expand shockwave
+	local expandTween = TweenService:Create(shockwave,
+		TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{Size = Vector3.new(20, 1, 20), Transparency = 1}
+	)
+	expandTween:Play()
+
+	expandTween.Completed:Connect(function()
+		shockwave:Destroy()
+	end)
+end
+
+function BossAIManager:createProjectileImpactEffect(position)
+	-- Small explosion for projectile impacts
+	local impact = Instance.new("Explosion")
+	impact.Position = position
+	impact.BlastRadius = 3
+	impact.BlastPressure = 0
+	impact.Parent = workspace
+end
+
+function BossAIManager:createTeleportEffect(position)
+	-- Teleport visual effect
+	local effect = Instance.new("Part")
+	effect.Name = "TeleportEffect"
+	effect.Size = Vector3.new(4, 8, 4)
+	effect.Shape = Enum.PartType.Cylinder
+	effect.Material = Enum.Material.Neon
+	effect.Color = Color3.fromRGB(150, 50, 255)
+	effect.CanCollide = false
+	effect.Anchored = true
+	effect.Position = position + Vector3.new(0, 4, 0)
+	effect.Transparency = 0.3
+	effect.Parent = workspace
+
+	-- Spin and fade effect
+	local spinTween = TweenService:Create(effect,
+		TweenInfo.new(1.0, Enum.EasingStyle.Linear),
+		{Rotation = Vector3.new(0, 360, 0)}
+	)
+
+	local fadeTween = TweenService:Create(effect,
+		TweenInfo.new(1.0, Enum.EasingStyle.Quart),
+		{Transparency = 1, Size = Vector3.new(8, 16, 8)}
+	)
+
+	spinTween:Play()
+	fadeTween:Play()
+
+	fadeTween.Completed:Connect(function()
+		effect:Destroy()
+	end)
+end
+
+function BossAIManager:playBossEntranceEffect(bossAI)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	print("👑 BOSS ENTRANCE:", bossAI.config.name)
+
+	-- FIXED: Create aura as a WeldConstraint attachment to boss (no separation possible)
+	local aura = Instance.new("Part")
+	aura.Name = "BossAura"
+	aura.Size = Vector3.new(BOSS_CONFIG.BOSS_AURA_SIZE, 0.5, BOSS_CONFIG.BOSS_AURA_SIZE)
+	aura.Shape = Enum.PartType.Block
+	aura.Material = Enum.Material.Neon
+	aura.Color = Color3.fromRGB(255, 50, 50)
+	aura.CanCollide = false
+	aura.Anchored = false  -- FIXED: Make it unanchored so it can be welded
+	aura.Position = rootPart.Position + Vector3.new(0, -2, 0)
+	aura.Transparency = 0.7
+	aura.Parent = rootPart  -- FIXED: Parent directly to rootPart for better attachment
+
+	-- FIXED: Add rounded corners to make it look better
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)  -- Make it circular
+	corner.Parent = aura
+
+	-- FIXED: Use WeldConstraint to permanently attach aura to boss
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = rootPart
+	weld.Part1 = aura
+	weld.Parent = rootPart
+
+	-- Position aura relative to boss
+	aura.CFrame = rootPart.CFrame * CFrame.new(0, -2, 0)
+
+	-- Pulsing aura (only size and transparency changes, no position changes)
+	local pulseTween = TweenService:Create(aura,
+		TweenInfo.new(1.0, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{Transparency = 0.9, Size = Vector3.new(BOSS_CONFIG.BOSS_AURA_SIZE * 1.2, 0.5, BOSS_CONFIG.BOSS_AURA_SIZE * 1.2)}
+	)
+	pulseTween:Play()
+
+	-- Store aura reference for cleanup (no connection needed since it's welded)
+	bossAI.aura = aura
+	bossAI.auraTween = pulseTween
+
+	print("👑 Created welded boss aura (will follow boss perfectly)")
+end
+
+function BossAIManager:playPhaseTransitionEffect(bossAI, oldPhase, newPhase)
+	local rootPart = bossAI.boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	print("👑 PHASE TRANSITION EFFECT:", oldPhase, "→", newPhase)
+
+	-- Flash effect
+	local flash = Instance.new("Part")
+	flash.Name = "PhaseFlash"
+	flash.Size = Vector3.new(30, 20, 30)
+	flash.Material = Enum.Material.Neon
+	flash.Color = Color3.fromRGB(255, 255, 255)
+	flash.CanCollide = false
+	flash.Anchored = true
+	flash.Position = rootPart.Position
+	flash.Transparency = 0.8
+	flash.Parent = workspace
+
+	-- Flash animation
+	local flashTween = TweenService:Create(flash,
+		TweenInfo.new(0.2, Enum.EasingStyle.Quart),
+		{Transparency = 1}
+	)
+	flashTween:Play()
+
+	flashTween.Completed:Connect(function()
+		flash:Destroy()
+	end)
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+function BossAIManager:findNearestPlayer(position)
+	local nearestPlayer = nil
+	local nearestDistance = math.huge
+
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local distance = (player.Character.HumanoidRootPart.Position - position).Magnitude
+			if distance < nearestDistance then
+				nearestDistance = distance
+				nearestPlayer = player
+			end
+		end
+	end
+
+	return nearestPlayer
+end
+
+function BossAIManager:findRoomCenter(boss)
+	-- Try to find room floor to determine center
+	local roomModel = boss.Parent
+	if not roomModel then return Vector3.new(0, 0, 0) end
+
+	-- Look for floor
+	for _, child in pairs(roomModel:GetDescendants()) do
+		if child:IsA("BasePart") and (
+			string.lower(child.Name):find("floor") or
+				(child.Size.X >= 100 and child.Size.Z >= 70)
+			) then
+			return child.Position
+		end
+	end
+
+	-- Fallback: use boss starting position
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	return rootPart and rootPart.Position or Vector3.new(0, 0, 0)
+end
+
+function BossAIManager:onBossDamaged(bossAI, damage)
+	-- Brief invulnerability
+	if not bossAI.isInvulnerable then
+		bossAI.isInvulnerable = true
+
+		-- FIXED: Ensure boss integrity when taking damage
+		self:ensureBossIntegrity(bossAI.boss)
+
+		task.spawn(function()
+			task.wait(BOSS_CONFIG.INVULNERABLE_TIME)
+			if bossAI and bossAI.boss and bossAI.boss.Parent then
+				bossAI.isInvulnerable = false
+			end
+		end)
+
+		-- Flash effect when damaged
+		self:createDamageFlash(bossAI.boss)
+	end
+end
+
+function BossAIManager:createDamageFlash(boss)
+	-- Flash boss red when damaged
+	for _, part in pairs(boss:GetDescendants()) do
+		if part:IsA("BasePart") then
+			local originalColor = part.Color
+			part.Color = Color3.fromRGB(255, 100, 100)
+
+			task.spawn(function()
+				task.wait(0.1)
+				if part.Parent then
+					part.Color = originalColor
+				end
+			end)
+		end
+	end
+end
+
+function BossAIManager:onBossDeath(boss, bossAI)
+	print("👑 BOSS DEFEATED:", bossAI.config.name)
+
+	-- Clean up boss AI
+	self:unregisterBoss(boss)
+
+	-- Death effects
+	self:createBossDeathEffect(boss)
+
+	-- Notify other systems
+	if _G.RoomManager then
+		-- Find boss room and mark as cleared
+		local roomModel = boss.Parent
+		if roomModel then
+			local roomData = {
+				model = roomModel,
+				roomType = "Boss",
+				roomID = roomModel.Name
+			}
+			_G.RoomManager:handleRoomCleared(roomData)
+		end
+	end
+end
+
+function BossAIManager:createBossDeathEffect(boss)
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Massive explosion
+	local deathExplosion = Instance.new("Explosion")
+	deathExplosion.Position = rootPart.Position
+	deathExplosion.BlastRadius = 25
+	deathExplosion.BlastPressure = 0
+	deathExplosion.Parent = workspace
+
+	-- Multiple smaller explosions
+	for i = 1, 5 do
+		task.spawn(function()
+			task.wait(i * 0.2)
+			local smallExplosion = Instance.new("Explosion")
+			smallExplosion.Position = rootPart.Position + Vector3.new(
+				(math.random() - 0.5) * 10,
+				(math.random() - 0.5) * 5,
+				(math.random() - 0.5) * 10
+			)
+			smallExplosion.BlastRadius = 8
+			smallExplosion.BlastPressure = 0
+			smallExplosion.Parent = workspace
+		end)
+	end
+end
+
+function BossAIManager:unregisterBoss(boss)
+	if self.activeBosses[boss] then
+		print("🗑️ Unregistering boss:", boss.Name)
+
+		local bossAI = self.activeBosses[boss]
+
+		-- FIXED: Clean up welded aura (no connection to disconnect)
+		if bossAI.auraTween then
+			bossAI.auraTween:Cancel()
+		end
+		if bossAI.aura and bossAI.aura.Parent then
+			bossAI.aura:Destroy()  -- WeldConstraint will clean up automatically
+		end
+
+		-- Remove from active bosses
+		self.activeBosses[boss] = nil
+
+		-- Remove from instances array
+		for i = #self.bossInstances, 1, -1 do
+			if self.bossInstances[i].boss == boss then
+				table.remove(self.bossInstances, i)
+				break
+			end
+		end
+	end
+end
+
+-- ========================================================================
+-- SPECIAL MECHANICS (Larry Jr., etc.)
+-- ========================================================================
+
+function BossAIManager:initializeLarryJr(bossAI)
+	-- Larry Jr. specific initialization
+	print("👑 Initializing Larry Jr. segments...")
+
+	-- Find all segments in the boss model
+	local boss = bossAI.boss
+	for _, child in pairs(boss:GetChildren()) do
+		if string.find(child.Name, "Segment") then
+			table.insert(bossAI.segments, child)
+		end
+	end
+
+	print("👑 Larry Jr. has", #bossAI.segments, "segments")
+end
+
+function BossAIManager:updateSpecialMechanics(bossAI, currentTime)
+	-- Handle special boss mechanics
+	if bossAI.bossType == "LARRY_JR" then
+		self:updateLarryJrMechanics(bossAI)
+	end
+
+	-- Clean up dead minions
+	for i = #bossAI.minions, 1, -1 do
+		local minion = bossAI.minions[i]
+		if not minion.Parent or not minion:FindFirstChild("Humanoid") or minion.Humanoid.Health <= 0 then
+			table.remove(bossAI.minions, i)
+		end
+	end
+end
+
+function BossAIManager:updateLarryJrMechanics(bossAI)
+	-- Larry Jr. segment following logic
+	local boss = bossAI.boss
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Update segment positions (snake-like following)
+	local segmentDistance = 4
+	local previousPosition = rootPart.Position
+
+	for i, segment in pairs(bossAI.segments) do
+		if segment and segment.Parent then
+			local segmentPart = segment:FindFirstChild("HumanoidRootPart")
+			if segmentPart then
+				-- Make segment follow previous position
+				local direction = (previousPosition - segmentPart.Position).Unit
+				local targetPos = previousPosition - direction * segmentDistance
+
+				-- Smooth movement
+				segmentPart.Position = segmentPart.Position:Lerp(targetPos, 0.1)
+				previousPosition = segmentPart.Position
+			end
+		end
+	end
+end
+
+-- ========================================================================
+-- PUBLIC API AND DEBUG COMMANDS
+-- ========================================================================
+
+function BossAIManager:countBossTypes()
+	local count = 0
+	for _ in pairs(BOSS_TYPES) do
+		count = count + 1
+	end
+	return count
+end
+
+function BossAIManager:getBossStats()
+	local stats = {
+		totalBosses = 0,
+		bossTypes = {}
+	}
+
+	for boss, bossAI in pairs(self.activeBosses) do
+		stats.totalBosses = stats.totalBosses + 1
+		local bossTypeName = bossAI.bossType
+
+		if not stats.bossTypes[bossTypeName] then
+			stats.bossTypes[bossTypeName] = 0
+		end
+		stats.bossTypes[bossTypeName] = stats.bossTypes[bossTypeName] + 1
+	end
+
+	return stats
+end
+
+function BossAIManager:forceBossPhase(bossName, phaseNumber)
+	for boss, bossAI in pairs(self.activeBosses) do
+		if boss.Name == bossName then
+			if phaseNumber <= #bossAI.config.phases then
+				self:transitionBossPhase(bossAI, phaseNumber)
+				print("👑 Forced", bossName, "to phase", phaseNumber)
+				return true
+			else
+				print("❌ Invalid phase number for", bossName)
+				return false
+			end
+		end
+	end
+	print("❌ Boss not found:", bossName)
+	return false
+end
+
+function BossAIManager:getBossHealth(bossName)
+	for boss, bossAI in pairs(self.activeBosses) do
+		if boss.Name == bossName then
+			local healthPercent = (bossAI.currentHealth / bossAI.maxHealth) * 100
+			print("👑", bossName, "Health:", math.floor(bossAI.currentHealth) .. "/" .. bossAI.maxHealth, "(" .. math.floor(healthPercent) .. "%)")
+			print("📊 Current Phase:", bossAI.currentPhase .. "/" .. #bossAI.config.phases)
+			return bossAI.currentHealth, bossAI.maxHealth
+		end
+	end
+	print("❌ Boss not found:", bossName)
+	return nil
+end
+
+function BossAIManager:debugBoss(bossName)
+	for boss, bossAI in pairs(self.activeBosses) do
+		if boss.Name == bossName then
+			print("🔍 BOSS DEBUG:", bossName)
+			print("  Type:", bossAI.bossType)
+			print("  Health:", math.floor(bossAI.currentHealth) .. "/" .. bossAI.maxHealth)
+			print("  Phase:", bossAI.currentPhase .. "/" .. #bossAI.config.phases)
+			print("  Is Attacking:", bossAI.isAttacking)
+			print("  Current Attack:", bossAI.currentAttack and bossAI.currentAttack.name or "None")
+			print("  Is Invulnerable:", bossAI.isInvulnerable)
+			print("  Has Target:", bossAI.currentTarget and bossAI.currentTarget.Name or "None")
+			print("  Minions:", #bossAI.minions)
+			if bossAI.bossType == "LARRY_JR" then
+				print("  Segments:", #bossAI.segments)
+			end
+			return true
+		end
+	end
+	print("❌ Boss not found:", bossName)
+	return false
+end
+
+-- ========================================================================
+-- CLEANUP
+-- ========================================================================
+
+function BossAIManager:destroy()
+	-- Clean up all connections
+	for _, connection in pairs(self.updateConnections) do
+		connection:Disconnect()
+	end
+	self.updateConnections = {}
+
+	-- Clear all boss references
+	self.activeBosses = {}
+	self.bossInstances = {}
+
+	print("🧹 Boss AI Manager destroyed")
+end
+
+-- ========================================================================
+-- INITIALIZATION AND GLOBAL SETUP
+-- ========================================================================
+
+-- Create global instance
+local bossAIManager = BossAIManager.new()
+_G.BossAI = bossAIManager
+
+-- ========================================================================
+-- GLOBAL DEBUG COMMANDS
+-- ========================================================================
+
+-- Global debug functions
+_G.BossStats = function()
+	local stats = bossAIManager:getBossStats()
+	print("👑 BOSS AI STATS:")
+	print("📊 Total active bosses:", stats.totalBosses)
+	print("🏷️ Boss types active:")
+	for bossType, count in pairs(stats.bossTypes) do
+		print("  ", bossType .. ":", count, "bosses")
+	end
+end
+
+_G.SpawnTestBoss = function(bossType, position)
+	bossType = bossType or "MONSTRO"
+	position = position or Vector3.new(0, 10, 0)
+
+	local config = BOSS_TYPES[bossType]
+	if not config then
+		print("❌ Unknown boss type:", bossType)
+		print("Available types:", table.concat({"MONSTRO", "LARRY_JR", "CUSTOM_TERROR"}, ", "))
+		return
+	end
+
+	-- Create test boss model
+	local boss = Instance.new("Model")
+	boss.Name = "TestBoss_" .. bossType
+	boss.Parent = workspace
+
+	-- Create humanoid
+	local humanoid = Instance.new("Humanoid")
+	humanoid.MaxHealth = config.maxHealth
+	humanoid.Health = config.maxHealth
+	humanoid.WalkSpeed = config.phases[1].moveSpeed
+	-- FIXED: Ensure boss doesn't break apart
+	humanoid.RequiresNeck = false
+	humanoid.BreakJointsOnDeath = false
+	humanoid.Parent = boss
+
+	-- Create root part
+	local rootPart = Instance.new("Part")
+	rootPart.Name = "HumanoidRootPart"
+	rootPart.Size = Vector3.new(4, 6, 4)
+	rootPart.Position = position
+	rootPart.Anchored = false
+	rootPart.CanCollide = true
+	rootPart.Color = Color3.fromRGB(150, 50, 50)
+	rootPart.Material = Enum.Material.Neon
+	rootPart.TopSurface = Enum.SurfaceType.Smooth
+	rootPart.BottomSurface = Enum.SurfaceType.Smooth
+	rootPart.Parent = boss
+
+	-- FIXED: Set PrimaryPart to prevent breaking
+	boss.PrimaryPart = rootPart
+
+	-- Create head
+	local head = Instance.new("Part")
+	head.Name = "Head"
+	head.Size = Vector3.new(3, 3, 3)
+	head.Color = Color3.fromRGB(200, 100, 100)
+	head.Material = Enum.Material.Neon
+	head.TopSurface = Enum.SurfaceType.Smooth
+	head.BottomSurface = Enum.SurfaceType.Smooth
+	head.CanCollide = false
+	head.Parent = boss
+
+	-- FIXED: Use Motor6D instead of WeldConstraint for proper humanoid
+	local neck = Instance.new("Motor6D")
+	neck.Name = "Neck"
+	neck.Part0 = rootPart
+	neck.Part1 = head
+	neck.C0 = CFrame.new(0, 3, 0)
+	neck.C1 = CFrame.new(0, -1.5, 0)
+	neck.Parent = rootPart
+
+	-- FIXED: Add body parts to prevent breaking
+	local torso = Instance.new("Part")
+	torso.Name = "Torso" 
+	torso.Size = Vector3.new(4, 4, 2)
+	torso.Color = Color3.fromRGB(150, 50, 50)
+	torso.Material = Enum.Material.Neon
+	torso.TopSurface = Enum.SurfaceType.Smooth
+	torso.BottomSurface = Enum.SurfaceType.Smooth
+	torso.CanCollide = false
+	torso.Parent = boss
+
+	local rootJoint = Instance.new("Motor6D")
+	rootJoint.Name = "RootJoint"
+	rootJoint.Part0 = rootPart
+	rootJoint.Part1 = torso
+	rootJoint.C0 = CFrame.new(0, 0, 0)
+	rootJoint.C1 = CFrame.new(0, 0, 0)
+	rootJoint.Parent = rootPart
+
+	-- If Larry Jr., create segments
+	if bossType == "LARRY_JR" then
+		for i = 1, 4 do
+			local segment = Instance.new("Model")
+			segment.Name = "Segment" .. i
+			segment.Parent = boss
+
+			local segmentPart = Instance.new("Part")
+			segmentPart.Name = "HumanoidRootPart"
+			segmentPart.Size = Vector3.new(3, 3, 3)
+			segmentPart.Position = position + Vector3.new(0, 0, i * 4)
+			segmentPart.Anchored = false
+			segmentPart.CanCollide = true
+			segmentPart.Color = Color3.fromRGB(100, 150, 50)
+			segmentPart.Material = Enum.Material.Neon
+			segmentPart.TopSurface = Enum.SurfaceType.Smooth
+			segmentPart.BottomSurface = Enum.SurfaceType.Smooth
+			segmentPart.Parent = segment
+
+			local segmentHumanoid = Instance.new("Humanoid")
+			segmentHumanoid.MaxHealth = 50
+			segmentHumanoid.Health = 50
+			segmentHumanoid.RequiresNeck = false
+			segmentHumanoid.BreakJointsOnDeath = false
+			segmentHumanoid.Parent = segment
+
+			segment.PrimaryPart = segmentPart
+		end
+	end
+
+	-- Add boss tag
+	CollectionService:AddTag(boss, "Boss_" .. bossType)
+
+	print("✅ Spawned test boss:", config.name, "at", position)
+	print("💡 Boss will automatically be detected and initialized by the AI system")
+	return boss
+end
+
+_G.ForceBossPhase = function(bossName, phaseNumber)
+	return bossAIManager:forceBossPhase(bossName, phaseNumber)
+end
+
+_G.GetBossHealth = function(bossName)
+	return bossAIManager:getBossHealth(bossName)
+end
+
+_G.DebugBoss = function(bossName)
+	return bossAIManager:debugBoss(bossName)
+end
+
+_G.ListBossTypes = function()
+	print("👑 AVAILABLE BOSS TYPES:")
+	for bossType, config in pairs(BOSS_TYPES) do
+		print("🏷️", bossType, "-", config.name)
+		print("   💪 Health:", config.maxHealth)
+		print("   📊 Phases:", #config.phases)
+		print("   🎯 Mechanics:", table.concat(config.specialMechanics, ", "))
+
+		-- Show phase breakdown
+		for i, phase in pairs(config.phases) do
+			print("     Phase", i .. ":", phase.name, "(" .. math.floor(phase.healthThreshold * 100) .. "% threshold)")
+		end
+		print("")
+	end
+end
+
+_G.FixBossIntegrity = function(bossName)
+	if not bossName then
+		print("Usage: _G.FixBossIntegrity('BossName')")
+		return
+	end
+
+	for boss, bossAI in pairs(bossAIManager.activeBosses) do
+		if boss.Name == bossName then
+			print("🔧 Fixing integrity for:", bossName)
+			bossAIManager:ensureBossIntegrity(boss)
+
+			-- Also reset humanoid state
+			local humanoid = boss:FindFirstChild("Humanoid")
+			local rootPart = boss:FindFirstChild("HumanoidRootPart")
+
+			if humanoid and rootPart then
+				humanoid.PlatformStand = false
+				rootPart.Anchored = false
+				rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+				if not boss.PrimaryPart then
+					boss.PrimaryPart = rootPart
+				end
+
+				print("✅ Boss integrity restored!")
+				return true
+			end
+		end
+	end
+
+	print("❌ Boss not found:", bossName)
+	return false
+end
+
+_G.DebugBossIntegrity = function(bossName)
+	if not bossName then
+		print("Usage: _G.DebugBossIntegrity('BossName')")
+		return
+	end
+
+	local boss = workspace:FindFirstChild(bossName)
+	if not boss then
+		print("❌ Boss not found:", bossName)
+		return
+	end
+
+	print("🔍 BOSS INTEGRITY DEBUG:", bossName)
+
+	local rootPart = boss:FindFirstChild("HumanoidRootPart")
+	local head = boss:FindFirstChild("Head")
+	local torso = boss:FindFirstChild("Torso")
+	local humanoid = boss:FindFirstChild("Humanoid")
+
+	print("  🤖 Humanoid:", humanoid and "✅" or "❌")
+	print("  🦴 HumanoidRootPart:", rootPart and "✅" or "❌")
+	print("  👤 Head:", head and "✅" or "❌")
+	print("  👕 Torso:", torso and "✅" or "❌")
+	print("  🔧 PrimaryPart:", boss.PrimaryPart and boss.PrimaryPart.Name or "❌ MISSING")
+
+	if rootPart then
+		print("  📍 Root Position:", rootPart.Position)
+		print("  ⚓ Root Anchored:", rootPart.Anchored)
+		print("  🔗 Neck Joint:", rootPart:FindFirstChild("Neck") and "✅" or "❌")
+		print("  🔗 Root Joint:", rootPart:FindFirstChild("RootJoint") and "✅" or "❌")
+	end
+
+	if humanoid then
+		print("  💪 Health:", humanoid.Health .. "/" .. humanoid.MaxHealth)
+		print("  🏃 WalkSpeed:", humanoid.WalkSpeed)
+		print("  🧍 PlatformStand:", humanoid.PlatformStand)
+		print("  💀 BreakJointsOnDeath:", humanoid.BreakJointsOnDeath)
+		print("  🦵 RequiresNeck:", humanoid.RequiresNeck)
+	end
+
+	return true
+end
+
+-- ========================================================================
+-- INTEGRATION NOTES AND SETUP INSTRUCTIONS
+-- ========================================================================
+
+print("👑 BOSS AI MANAGER LOADED!")
+print("📋 Features:")
+print("  ✅ Isaac-style boss battles with phases")
+print("  ✅ 3 pre-built boss types (Monstro, Larry Jr., Custom)")
+print("  ✅ Multiple attack patterns per boss")
+print("  ✅ Health-based phase transitions")
+print("  ✅ Visual effects and telegraphs")
+print("  ✅ Integration with existing damage system")
+print("  ✅ Minion summoning support")
+print("")
+print("🔧 Setup Instructions:")
+print("  1. Create boss models in workspace")
+print("  2. Add CollectionService tags: 'Boss_MONSTRO', 'Boss_LARRY_JR', etc.")
+print("  3. Ensure bosses have Humanoid and HumanoidRootPart")
+print("  4. For Larry Jr., create child models named 'Segment1', 'Segment2', etc.")
+print("")
+print("🎮 Debug Commands:")
+print("  _G.SpawnTestBoss('MONSTRO') - Spawn test boss")
+print("  _G.BossStats() - Show active boss statistics")
+print("  _G.ListBossTypes() - Show all available boss types")
+print("  _G.DebugBoss('BossName') - Debug specific boss")
+print("  _G.ForceBossPhase('BossName', 2) - Force boss to specific phase")
+print("  _G.GetBossHealth('BossName') - Check boss health")
+print("  _G.KillAllBosses() - Kill all active bosses")
+print("")
+print("⚠️ Integration Requirements:")
+print("  💖 Heart system (SpikeHeartDamage RemoteEvent)")
+print("  👹 Enemy spawner (_G.EnemySpawner) for minion summoning")
+print("  🏠 Room manager (_G.RoomManager) for room clearing")
+print("")
+print("🎯 Ready to create epic boss battles!")
+
+return BossAIManager
