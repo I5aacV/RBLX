@@ -429,8 +429,6 @@ if shootRemote then
 	-- Store the original connections (we'll need to replace them)
 	-- You'll need to update your ShootingServerHandler to use this system
 else
-	warn("⚠️ IsaacShootRemote not found - damage numbers won't integrate automatically")
-	print("💡 Make sure to call _G.DamageNumbers:showDamage() in your shooting handler")
 end
 
 -- ========================================================================
