@@ -1,0 +1,639 @@
+-- ========================================================================
+-- ENHANCED BOSS PHASE MANAGEMENT SYSTEM WITH FLY SPAWNING
+-- Place this in ServerScriptService/Systems/BossPhaseManager
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
+local BOSS_CONFIG = {
+	-- Phase transition thresholds
+	PHASE_2_HEALTH_THRESHOLD = 0.5, -- 50% health triggers phase 2
+	PHASE_3_HEALTH_THRESHOLD = 0.25, -- 25% health triggers phase 3 (if implemented)
+
+	-- Fly spawning configuration
+	MAX_FLIES_PER_BOSS = 5, -- Maximum flies that can exist per boss
+	FLY_RESPAWN_INTERVAL = 90, -- 1:30 minutes = 90 seconds
+	FLY_SPAWN_DELAY = 0.5, -- Delay between individual fly spawns
+
+	-- Fly positioning
+	FLY_SPAWN_RADIUS = 15, -- How far from boss to spawn flies
+	FLY_HEIGHT_OFFSET = 5, -- Height above boss position
+
+	-- Boss tracking
+	BOSS_UPDATE_INTERVAL = 0.5, -- How often to check boss status
+}
+
+-- ========================================================================
+-- BOSS PHASE MANAGER CLASS
+-- ========================================================================
+
+local BossPhaseManager = {}
+BossPhaseManager.__index = BossPhaseManager
+
+function BossPhaseManager.new()
+	local self = setmetatable({}, BossPhaseManager)
+
+	self.activeBosses = {} -- Track all active bosses
+	self.bossPhases = {} -- Track phase for each boss
+	self.bossFlies = {} -- Track flies for each boss
+	self.bossTimers = {} -- Track timing for each boss
+	self.updateConnection = nil
+
+	self:initialize()
+	return self
+end
+
+function BossPhaseManager:initialize()
+	print("👑 Initializing Boss Phase Management System...")
+
+	-- Start the main update loop
+	self:startUpdateLoop()
+
+	-- Hook into existing boss spawning
+	self:hookIntoBossSpawning()
+
+	print("✅ Boss Phase Manager initialized!")
+end
+
+-- ========================================================================
+-- BOSS DETECTION AND TRACKING
+-- ========================================================================
+
+function BossPhaseManager:hookIntoBossSpawning()
+	-- Monitor for new boss models being added to workspace
+	local function checkForBosses()
+		for _, obj in pairs(workspace:GetChildren()) do
+			if obj:IsA("Model") and self:isBossModel(obj) then
+				if not self.activeBosses[obj] then
+					self:registerBoss(obj)
+				end
+			end
+		end
+	end
+
+	-- Initial scan
+	checkForBosses()
+
+	-- Monitor for new bosses periodically
+	spawn(function()
+		while true do
+			checkForBosses()
+			task.wait(2) -- Check every 2 seconds for new bosses
+		end
+	end)
+
+	print("🔗 Hooked into boss spawning detection")
+end
+
+function BossPhaseManager:isBossModel(model)
+	local modelName = string.lower(model.Name or "")
+
+	-- Check for boss indicators
+	return (string.find(modelName, "boss") or 
+		string.find(modelName, "monstro") or
+		string.find(modelName, "larry") or
+		CollectionService:HasTag(model, "Boss")) and
+		model:FindFirstChild("Humanoid")
+end
+
+function BossPhaseManager:registerBoss(bossModel)
+	print("👑 Registering new boss:", bossModel.Name)
+
+	local humanoid = bossModel:FindFirstChild("Humanoid")
+	if not humanoid then
+		warn("❌ Boss has no Humanoid:", bossModel.Name)
+		return
+	end
+
+	-- Initialize boss tracking data
+	self.activeBosses[bossModel] = {
+		model = bossModel,
+		humanoid = humanoid,
+		maxHealth = humanoid.MaxHealth,
+		spawnTime = tick(),
+		lastPhaseCheck = tick()
+	}
+
+	self.bossPhases[bossModel] = {
+		currentPhase = 1,
+		phase2StartTime = nil,
+		hasTriggeredPhase2 = false
+	}
+
+	self.bossFlies[bossModel] = {
+		flies = {},
+		lastSpawnTime = 0,
+		totalSpawned = 0
+	}
+
+	self.bossTimers[bossModel] = {
+		aliveTime = 0,
+		phase2Duration = 0
+	}
+
+	-- Setup death detection
+	humanoid.Died:Connect(function()
+		self:onBossDeath(bossModel)
+	end)
+
+	-- Monitor for boss being removed
+	bossModel.AncestryChanged:Connect(function()
+		if not bossModel.Parent then
+			self:cleanupBoss(bossModel)
+		end
+	end)
+
+	print("✅ Boss registered successfully:", bossModel.Name)
+end
+
+-- ========================================================================
+-- PHASE MANAGEMENT
+-- ========================================================================
+
+function BossPhaseManager:updateBossPhase(bossModel)
+	local bossData = self.activeBosses[bossModel]
+	local phaseData = self.bossPhases[bossModel]
+	local timerData = self.bossTimers[bossModel]
+
+	if not bossData or not phaseData or not timerData then
+		return
+	end
+
+	local humanoid = bossData.humanoid
+	if humanoid.Health <= 0 then
+		return -- Boss is dead
+	end
+
+	local healthPercentage = humanoid.Health / bossData.maxHealth
+	local currentTime = tick()
+
+	-- Update timers
+	timerData.aliveTime = currentTime - bossData.spawnTime
+	if phaseData.phase2StartTime then
+		timerData.phase2Duration = currentTime - phaseData.phase2StartTime
+	end
+
+	-- Check for phase 2 transition
+	if not phaseData.hasTriggeredPhase2 and healthPercentage <= BOSS_CONFIG.PHASE_2_HEALTH_THRESHOLD then
+		self:triggerPhase2(bossModel)
+	end
+
+	-- Handle fly respawning in phase 2
+	if phaseData.currentPhase >= 2 then
+		self:handlePhase2FlySpawning(bossModel)
+	end
+end
+
+function BossPhaseManager:triggerPhase2(bossModel)
+	local phaseData = self.bossPhases[bossModel]
+	local bossData = self.activeBosses[bossModel]
+
+	print("👑 BOSS PHASE 2 TRIGGERED:", bossModel.Name)
+
+	phaseData.currentPhase = 2
+	phaseData.hasTriggeredPhase2 = true
+	phaseData.phase2StartTime = tick()
+
+	-- Visual effects for phase transition
+	self:createPhaseTransitionEffects(bossModel)
+
+	-- Initial fly spawn for phase 2
+	self:spawnInitialPhase2Flies(bossModel)
+
+	print("🎆 Boss entered Phase 2! Flies incoming...")
+end
+
+-- ========================================================================
+-- FLY SPAWNING SYSTEM
+-- ========================================================================
+
+function BossPhaseManager:spawnInitialPhase2Flies(bossModel)
+	print("🪰 Spawning initial Phase 2 flies for:", bossModel.Name)
+
+	-- Spawn flies with a delay between each
+	spawn(function()
+		for i = 1, BOSS_CONFIG.MAX_FLIES_PER_BOSS do
+			self:spawnSingleFly(bossModel, i)
+			task.wait(BOSS_CONFIG.FLY_SPAWN_DELAY)
+		end
+	end)
+end
+
+function BossPhaseManager:handlePhase2FlySpawning(bossModel)
+	local phaseData = self.bossPhases[bossModel]
+	local flyData = self.bossFlies[bossModel]
+	local timerData = self.bossTimers[bossModel]
+
+	if phaseData.currentPhase < 2 then
+		return
+	end
+
+	local currentTime = tick()
+
+	-- Check if it's time to respawn flies (only if boss has been alive for 1:30+ in phase 2)
+	if timerData.phase2Duration >= BOSS_CONFIG.FLY_RESPAWN_INTERVAL then
+		if currentTime - flyData.lastSpawnTime >= BOSS_CONFIG.FLY_RESPAWN_INTERVAL then
+			local currentFlyCount = self:countAliveFFlies(bossModel)
+
+			if currentFlyCount < BOSS_CONFIG.MAX_FLIES_PER_BOSS then
+				local flyDeficit = BOSS_CONFIG.MAX_FLIES_PER_BOSS - currentFlyCount
+				print("🪰 Boss has been in Phase 2 for 1:30+, respawning", flyDeficit, "flies")
+
+				-- Spawn missing flies
+				spawn(function()
+					for i = 1, flyDeficit do
+						self:spawnSingleFly(bossModel, currentFlyCount + i)
+						task.wait(BOSS_CONFIG.FLY_SPAWN_DELAY)
+					end
+				end)
+
+				flyData.lastSpawnTime = currentTime
+			end
+		end
+	end
+end
+
+function BossPhaseManager:spawnSingleFly(bossModel, flyIndex)
+	local bossData = self.activeBosses[bossModel]
+	local flyData = self.bossFlies[bossModel]
+
+	if not bossData or not bossData.model.Parent then
+		return nil
+	end
+
+	-- Try to get fly template from EnemySpawner
+	local flyTemplate = nil
+	if _G.EnemySpawner and _G.EnemySpawner.enemyTemplates then
+		flyTemplate = _G.EnemySpawner.enemyTemplates["Fly"]
+	end
+
+	if not flyTemplate then
+		warn("❌ No Fly template found in EnemySpawner!")
+		return nil
+	end
+
+	-- Calculate spawn position around the boss
+	local bossPosition = self:getBossPosition(bossModel)
+	if not bossPosition then
+		warn("❌ Could not get boss position for fly spawning")
+		return nil
+	end
+
+	local spawnPosition = self:calculateFlySpawnPosition(bossPosition, flyIndex)
+
+	-- Clone and setup fly
+	local fly = flyTemplate:Clone()
+	fly.Name = "BossFly_" .. flyIndex .. "_" .. tick()
+	fly.Parent = bossModel.Parent -- Same parent as boss
+
+	-- Position the fly
+	if fly.PrimaryPart then
+		fly:SetPrimaryPartCFrame(CFrame.new(spawnPosition))
+	elseif fly:FindFirstChild("HumanoidRootPart") then
+		fly.HumanoidRootPart.Position = spawnPosition
+	else
+		-- Fallback positioning
+		local mainPart = fly:FindFirstChildOfClass("BasePart")
+		if mainPart then
+			mainPart.Position = spawnPosition
+		end
+	end
+
+	-- Add tags and attributes
+	CollectionService:AddTag(fly, "RoomEnemy")
+	CollectionService:AddTag(fly, "BossPhaseEnemy")
+	fly:SetAttribute("BossModel", bossModel.Name)
+	fly:SetAttribute("PhaseSpawned", 2)
+	fly:SetAttribute("SpawnTime", tick())
+
+	-- Setup AI if available
+	if _G.EnemyAI then
+		_G.EnemyAI:applyAIToEnemy(fly, "FLYER")
+	end
+
+	-- Track the fly
+	table.insert(flyData.flies, fly)
+	flyData.totalSpawned = flyData.totalSpawned + 1
+
+	-- Setup death detection for fly
+	local flyHumanoid = fly:FindFirstChild("Humanoid")
+	if flyHumanoid then
+		flyHumanoid.Died:Connect(function()
+			self:onFlyDeath(bossModel, fly)
+		end)
+	end
+
+	-- Add to RoomManager if available
+	if _G.RoomManager then
+		local roomData = self:findBossRoom(bossModel)
+		if roomData then
+			_G.RoomManager:addEnemyToRoom(roomData, fly)
+		end
+	end
+
+	print("🪰 Spawned boss fly:", fly.Name, "at position:", spawnPosition)
+	return fly
+end
+
+function BossPhaseManager:calculateFlySpawnPosition(bossPosition, flyIndex)
+	-- Spawn flies in a circle around the boss
+	local angle = (flyIndex - 1) * (math.pi * 2 / BOSS_CONFIG.MAX_FLIES_PER_BOSS)
+	local radius = BOSS_CONFIG.FLY_SPAWN_RADIUS
+
+	local x = bossPosition.X + math.cos(angle) * radius
+	local z = bossPosition.Z + math.sin(angle) * radius
+	local y = bossPosition.Y + BOSS_CONFIG.FLY_HEIGHT_OFFSET
+
+	return Vector3.new(x, y, z)
+end
+
+function BossPhaseManager:getBossPosition(bossModel)
+	if bossModel.PrimaryPart then
+		return bossModel.PrimaryPart.Position
+	end
+
+	local humanoidRootPart = bossModel:FindFirstChild("HumanoidRootPart")
+	if humanoidRootPart then
+		return humanoidRootPart.Position
+	end
+
+	-- Fallback: use any BasePart
+	local anyPart = bossModel:FindFirstChildOfClass("BasePart")
+	if anyPart then
+		return anyPart.Position
+	end
+
+	return nil
+end
+
+function BossPhaseManager:countAliveFFlies(bossModel)
+	local flyData = self.bossFlies[bossModel]
+	if not flyData then return 0 end
+
+	local aliveCount = 0
+	for i = #flyData.flies, 1, -1 do
+		local fly = flyData.flies[i]
+		if fly and fly.Parent then
+			local flyHumanoid = fly:FindFirstChild("Humanoid")
+			if flyHumanoid and flyHumanoid.Health > 0 then
+				aliveCount = aliveCount + 1
+			else
+				-- Remove dead fly from tracking
+				table.remove(flyData.flies, i)
+			end
+		else
+			-- Remove missing fly from tracking
+			table.remove(flyData.flies, i)
+		end
+	end
+
+	return aliveCount
+end
+
+-- ========================================================================
+-- EVENT HANDLERS
+-- ========================================================================
+
+function BossPhaseManager:onFlyDeath(bossModel, fly)
+	print("🪰 Boss fly died:", fly.Name)
+
+	local flyData = self.bossFlies[bossModel]
+	if flyData then
+		-- Remove from tracking
+		for i, trackedFly in ipairs(flyData.flies) do
+			if trackedFly == fly then
+				table.remove(flyData.flies, i)
+				break
+			end
+		end
+	end
+
+	-- Note: Respawning is handled by the timer system, not immediately on death
+end
+
+function BossPhaseManager:onBossDeath(bossModel)
+	print("👑 Boss died:", bossModel.Name)
+
+	-- Kill all associated flies
+	self:killAllBossFlies(bossModel)
+
+	-- Clean up tracking
+	self:cleanupBoss(bossModel)
+end
+
+function BossPhaseManager:killAllBossFlies(bossModel)
+	local flyData = self.bossFlies[bossModel]
+	if not flyData then return end
+
+	print("🪰 Killing all flies for dead boss:", bossModel.Name)
+
+	for _, fly in pairs(flyData.flies) do
+		if fly and fly.Parent then
+			local flyHumanoid = fly:FindFirstChild("Humanoid")
+			if flyHumanoid and flyHumanoid.Health > 0 then
+				flyHumanoid.Health = 0
+			end
+		end
+	end
+
+	flyData.flies = {}
+end
+
+function BossPhaseManager:cleanupBoss(bossModel)
+	print("🧹 Cleaning up boss tracking:", bossModel.Name)
+
+	self.activeBosses[bossModel] = nil
+	self.bossPhases[bossModel] = nil
+	self.bossFlies[bossModel] = nil
+	self.bossTimers[bossModel] = nil
+end
+
+-- ========================================================================
+-- VISUAL EFFECTS
+-- ========================================================================
+
+function BossPhaseManager:createPhaseTransitionEffects(bossModel)
+	local bossPosition = self:getBossPosition(bossModel)
+	if not bossPosition then return end
+
+	-- Create dramatic light burst
+	local effectPart = Instance.new("Part")
+	effectPart.Name = "PhaseTransitionEffect"
+	effectPart.Size = Vector3.new(1, 1, 1)
+	effectPart.Position = bossPosition + Vector3.new(0, 5, 0)
+	effectPart.Anchored = true
+	effectPart.CanCollide = false
+	effectPart.Transparency = 1
+	effectPart.Parent = workspace
+
+	-- Add dramatic light
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 0, 0) -- Red for phase 2
+	light.Brightness = 0
+	light.Range = 50
+	light.Parent = effectPart
+
+	-- Animate light burst
+	local lightTween = game:GetService("TweenService"):Create(light,
+		TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{Brightness = 15, Range = 100}
+	)
+
+	local fadeTween = game:GetService("TweenService"):Create(light,
+		TweenInfo.new(2.0, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+		{Brightness = 0, Range = 10}
+	)
+
+	lightTween:Play()
+	lightTween.Completed:Connect(function()
+		task.wait(1.0)
+		fadeTween:Play()
+	end)
+
+	fadeTween.Completed:Connect(function()
+		effectPart:Destroy()
+	end)
+
+	print("🎆 Phase transition effects created for:", bossModel.Name)
+end
+
+-- ========================================================================
+-- UTILITY FUNCTIONS
+-- ========================================================================
+
+function BossPhaseManager:findBossRoom(bossModel)
+	-- Try to find room data from RoomManager
+	if _G.RoomManager then
+		local allRooms = _G.RoomManager:getAllRooms()
+		for roomID, roomData in pairs(allRooms) do
+			if roomData.model == bossModel.Parent then
+				return roomData
+			end
+		end
+	end
+	return nil
+end
+
+function BossPhaseManager:startUpdateLoop()
+	self.updateConnection = RunService.Heartbeat:Connect(function()
+		local currentTime = tick()
+
+		-- Update all active bosses
+		for bossModel, bossData in pairs(self.activeBosses) do
+			if currentTime - bossData.lastPhaseCheck >= BOSS_CONFIG.BOSS_UPDATE_INTERVAL then
+				self:updateBossPhase(bossModel)
+				bossData.lastPhaseCheck = currentTime
+			end
+		end
+	end)
+end
+
+-- ========================================================================
+-- PUBLIC API AND DEBUG
+-- ========================================================================
+
+function BossPhaseManager:getBossStatus(bossModel)
+	local bossData = self.activeBosses[bossModel]
+	local phaseData = self.bossPhases[bossModel]
+	local flyData = self.bossFlies[bossModel]
+	local timerData = self.bossTimers[bossModel]
+
+	if not bossData then return nil end
+
+	return {
+		phase = phaseData.currentPhase,
+		health = bossData.humanoid.Health,
+		maxHealth = bossData.maxHealth,
+		healthPercentage = bossData.humanoid.Health / bossData.maxHealth,
+		aliveTime = timerData.aliveTime,
+		phase2Duration = timerData.phase2Duration,
+		aliveFlyCount = self:countAliveFFlies(bossModel),
+		totalFliesSpawned = flyData.totalSpawned
+	}
+end
+
+function BossPhaseManager:forcePhase2(bossModel)
+	if self.activeBosses[bossModel] and not self.bossPhases[bossModel].hasTriggeredPhase2 then
+		self:triggerPhase2(bossModel)
+		return true
+	end
+	return false
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+-- Create global instance
+local bossPhaseManager = BossPhaseManager.new()
+_G.BossPhaseManager = bossPhaseManager
+
+-- Debug commands
+_G.ListActiveBosses = function()
+	print("📋 ACTIVE BOSSES:")
+	local count = 0
+	for bossModel, _ in pairs(bossPhaseManager.activeBosses) do
+		count = count + 1
+		local status = bossPhaseManager:getBossStatus(bossModel)
+		if status then
+			print("👑", bossModel.Name)
+			print("  Phase:", status.phase)
+			print("  Health:", string.format("%.0f", status.health) .. "/" .. status.maxHealth, 
+				"(" .. string.format("%.1f", status.healthPercentage * 100) .. "%)")
+			print("  Alive time:", string.format("%.1f", status.aliveTime), "seconds")
+			if status.phase >= 2 then
+				print("  Phase 2 duration:", string.format("%.1f", status.phase2Duration), "seconds")
+				print("  Flies alive:", status.aliveFlyCount .. "/" .. BOSS_CONFIG.MAX_FLIES_PER_BOSS)
+				print("  Total flies spawned:", status.totalFliesSpawned)
+			end
+		end
+	end
+	print("📊 Total active bosses:", count)
+end
+
+_G.ForcePhase2 = function(bossName)
+	for bossModel, _ in pairs(bossPhaseManager.activeBosses) do
+		if string.find(string.lower(bossModel.Name), string.lower(bossName or "")) then
+			local success = bossPhaseManager:forcePhase2(bossModel)
+			if success then
+				print("✅ Forced Phase 2 for:", bossModel.Name)
+			else
+				print("❌ Could not force Phase 2 for:", bossModel.Name, "(already in Phase 2 or boss not found)")
+			end
+			return
+		end
+	end
+	print("❌ Boss not found:", bossName)
+end
+
+_G.KillBossFlies = function(bossName)
+	for bossModel, _ in pairs(bossPhaseManager.activeBosses) do
+		if not bossName or string.find(string.lower(bossModel.Name), string.lower(bossName)) then
+			bossPhaseManager:killAllBossFlies(bossModel)
+			print("💀 Killed all flies for:", bossModel.Name)
+			if bossName then return end
+		end
+	end
+end
+
+print("👑 Enhanced Boss Phase Management System loaded!")
+print("📋 Features:")
+print("  ✅ Automatic phase detection at 50% health")
+print("  ✅ Spawns 5 flies in Phase 2")
+print("  ✅ Fly respawning after 1:30 minutes in Phase 2")
+print("  ✅ Visual phase transition effects")
+print("  ✅ Integration with existing enemy and room systems")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.ListActiveBosses() - Show all active bosses and their status")
+print("  _G.ForcePhase2('BossName') - Force a boss into Phase 2")
+print("  _G.KillBossFlies('BossName') - Kill all flies for a boss")
+print("")
+print("🎮 Ready to enhance boss fights with phase-based fly spawning!")
