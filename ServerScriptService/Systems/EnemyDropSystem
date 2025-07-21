@@ -1,0 +1,1077 @@
+-- ========================================================================
+-- COMPLETE ENEMY DROP SYSTEM - Isaac-Style Pickups
+-- Place this in ServerScriptService/Systems/EnemyDropSystem
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- ========================================================================
+-- DROP CONFIGURATION
+-- ========================================================================
+
+local DROP_CONFIG = {
+	-- Drop chances (out of 100)
+	COIN_CHANCE = 45,        -- 45% chance
+	HEART_CHANCE = 15,       -- 15% chance  
+	BOMB_CHANCE = 8,         -- 8% chance
+	KEY_CHANCE = 8,          -- 8% chance
+	RARE_ITEM_CHANCE = 2,    -- 2% chance for actual items
+	NOTHING_CHANCE = 22,     -- 22% chance for no drop
+
+	-- Boss drop multipliers
+	BOSS_DROP_MULTIPLIER = 3, -- Bosses drop 3x more stuff
+	BOSS_GUARANTEED_DROPS = 2, -- Bosses always drop at least 2 things
+
+	-- Physics and visual
+	DROP_SPAWN_HEIGHT = 3,    -- Height above enemy when dropped
+	DROP_SPREAD_RADIUS = 2,   -- How far drops can scatter
+	PICKUP_RANGE = 4,         -- How close player needs to be
+	DROP_LIFETIME = 60,       -- Drops disappear after 60 seconds
+
+	-- Animation
+	DROP_BOUNCE_HEIGHT = 2,   -- How high drops bounce
+	DROP_BOUNCE_TIME = 0.5,   -- Bounce animation time
+	PICKUP_SCALE_TIME = 0.3,  -- Pickup animation time
+}
+
+-- Drop types and their properties
+local DROP_TYPES = {
+	COIN = {
+		name = "Coin",
+		model = "DropModel_Coin",
+		value = 1,
+		color = Color3.fromRGB(255, 215, 0), -- Gold
+		pickupSound = "CoinPickup",
+		description = "Currency for shops"
+	},
+	HEART = {
+		name = "Heart", 
+		model = "DropModel_Heart",
+		value = 2, -- 2 hits = 1 full heart
+		color = Color3.fromRGB(255, 100, 100), -- Red
+		pickupSound = "HeartPickup", 
+		description = "Restores health"
+	},
+	BOMB = {
+		name = "Bomb",
+		model = "DropModel_Bomb",
+		value = 1,
+		color = Color3.fromRGB(50, 50, 50), -- Dark gray
+		pickupSound = "BombPickup",
+		description = "Explosive for breaking walls"
+	},
+	KEY = {
+		name = "Key",
+		model = "DropModel_Key", 
+		value = 1,
+		color = Color3.fromRGB(200, 200, 50), -- Yellow
+		pickupSound = "KeyPickup",
+		description = "Opens locked doors and chests"
+	}
+}
+
+-- ========================================================================
+-- ENEMY DROP MANAGER CLASS
+-- ========================================================================
+
+local EnemyDropManager = {}
+EnemyDropManager.__index = EnemyDropManager
+
+function EnemyDropManager.new()
+	local self = setmetatable({}, EnemyDropManager)
+
+	self.dropModels = {}
+	self.activeDrops = {}
+	self.playerInventories = {} -- Track player currencies
+
+	self:loadDropModels()
+	self:initializePlayerInventories()
+	self:hookIntoEnemyDeaths()
+
+	return self
+end
+
+-- ========================================================================
+-- MODEL LOADING AND CREATION
+-- ========================================================================
+
+function EnemyDropManager:loadDropModels()
+	print("💎 Loading drop models from GridAssets/Collectibles...")
+
+	-- Load from existing GridAssets/Collectibles structure
+	local gridAssetsFolder = ReplicatedStorage:FindFirstChild("GridAssets")
+	if gridAssetsFolder then
+		local collectiblesFolder = gridAssetsFolder:FindFirstChild("Collectibles")
+		if collectiblesFolder then
+			self:loadFromCollectiblesFolder(collectiblesFolder)
+			print("✅ Found GridAssets/Collectibles folder")
+		else
+			print("⚠️ GridAssets found but no Collectibles subfolder")
+		end
+	else
+		print("⚠️ GridAssets folder not found")
+	end
+
+	-- Fallback: Try legacy DropModels folder
+	local dropsFolder = ReplicatedStorage:FindFirstChild("DropModels")
+	if dropsFolder then
+		self:loadFromLegacyFolder(dropsFolder)
+	end
+
+	-- Check workspace for loose models
+	self:loadFromWorkspace()
+
+	-- Create fallback models if none found
+	self:createFallbackModels()
+
+	print("📦 Drop models loaded:", self:getLoadedModelCount())
+end
+
+function EnemyDropManager:loadFromCollectiblesFolder(collectiblesFolder)
+	print("📂 Scanning GridAssets/Collectibles for drop models...")
+
+	-- Map folder names to drop types
+	local folderMappings = {
+		["Keys"] = "KEY",
+		["Bombs"] = "BOMB", 
+		["Hearts"] = "HEART",
+		["Coins"] = "COIN"
+	}
+
+	-- Scan each collectible type folder
+	for folderName, dropType in pairs(folderMappings) do
+		local typeFolder = collectiblesFolder:FindFirstChild(folderName)
+		if typeFolder then
+			print("  📂 Checking", folderName, "folder for", dropType, "models...")
+
+			-- Look for any model in this folder
+			for _, child in pairs(typeFolder:GetChildren()) do
+				if child:IsA("Model") then
+					-- Use the first model found in each folder
+					if not self.dropModels[dropType] then
+						self.dropModels[dropType] = child
+						print("  ✅ Loaded", dropType, "model:", child.Name, "from", folderName)
+					end
+				end
+			end
+
+			-- Also check subfolders
+			for _, subfolder in pairs(typeFolder:GetChildren()) do
+				if subfolder:IsA("Folder") then
+					for _, child in pairs(subfolder:GetChildren()) do
+						if child:IsA("Model") and not self.dropModels[dropType] then
+							self.dropModels[dropType] = child
+							print("  ✅ Loaded", dropType, "model:", child.Name, "from", folderName .. "/" .. subfolder.Name)
+							break
+						end
+					end
+				end
+			end
+		else
+			print("  ❌ No", folderName, "folder found in Collectibles")
+		end
+	end
+end
+
+function EnemyDropManager:loadFromLegacyFolder(parentFolder)
+	print("📂 Checking legacy DropModels folder...")
+	for _, child in pairs(parentFolder:GetChildren()) do
+		if child:IsA("Model") and string.find(child.Name, "DropModel_") then
+			local dropType = child.Name:gsub("DropModel_", "")
+			if not self.dropModels[dropType] then -- Don't override GridAssets models
+				self.dropModels[dropType] = child
+				print("✅ Loaded legacy drop model:", dropType)
+			end
+		end
+	end
+end
+
+function EnemyDropManager:loadFromWorkspace()
+	print("🔄 Checking workspace for loose drop models...")
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and string.find(obj.Name, "DropModel_") then
+			local dropType = obj.Name:gsub("DropModel_", "")
+
+			-- Don't override existing models from GridAssets
+			if not self.dropModels[dropType] then
+				-- Move to ReplicatedStorage for organization
+				obj.Parent = ReplicatedStorage
+				self.dropModels[dropType] = obj
+				print("📦 Moved drop model from workspace:", dropType)
+			end
+		end
+	end
+end
+
+function EnemyDropManager:createFallbackModels()
+	print("🔧 Creating fallback drop models...")
+
+	for dropType, config in pairs(DROP_TYPES) do
+		if not self.dropModels[dropType] then
+			local model = self:createSimpleDropModel(dropType, config)
+			self.dropModels[dropType] = model
+			print("🛠️ Created fallback model:", dropType)
+		end
+	end
+end
+
+function EnemyDropManager:createSimpleDropModel(dropType, config)
+	-- Create a simple model for drops
+	local model = Instance.new("Model")
+	model.Name = "DropModel_" .. dropType
+	model.Parent = ReplicatedStorage
+
+	-- Main pickup part
+	local part = Instance.new("Part")
+	part.Name = "PickupPart" 
+	part.Size = Vector3.new(2, 2, 2)
+	part.Shape = Enum.PartType.Ball
+	part.Anchored = true
+	part.CanCollide = false
+	part.Color = config.color
+	part.Material = Enum.Material.Neon
+	part.Parent = model
+
+	-- Add glow effect
+	local light = Instance.new("PointLight")
+	light.Color = config.color
+	light.Brightness = 2
+	light.Range = 8
+	light.Parent = part
+
+	-- Add floating animation (will be applied when spawned)
+	local floatGui = Instance.new("BillboardGui")
+	floatGui.Size = UDim2.new(0, 100, 0, 30)
+	floatGui.LightInfluence = 0
+	floatGui.Parent = part
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text = config.name
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.TextScaled = true
+	label.Font = Enum.Font.SourceSansBold
+	label.TextStrokeTransparency = 0
+	label.TextStrokeColor3 = Color3.new(0, 0, 0)
+	label.Parent = floatGui
+
+	-- Set primary part
+	model.PrimaryPart = part
+
+	return model
+end
+
+function EnemyDropManager:getLoadedModelCount()
+	local count = 0
+	for _ in pairs(self.dropModels) do
+		count = count + 1
+	end
+	return count
+end
+
+-- ========================================================================
+-- PLAYER INVENTORY SYSTEM  
+-- ========================================================================
+
+function EnemyDropManager:initializePlayerInventories()
+	-- Initialize existing players
+	for _, player in pairs(Players:GetPlayers()) do
+		self:initializePlayerInventory(player)
+	end
+
+	-- Initialize new players
+	Players.PlayerAdded:Connect(function(player)
+		self:initializePlayerInventory(player)
+	end)
+
+	-- Cleanup leaving players
+	Players.PlayerRemoving:Connect(function(player)
+		self.playerInventories[player.UserId] = nil
+	end)
+
+	-- Handle inventory requests from clients
+	local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+	if inventoryRemote then
+		inventoryRemote.OnServerEvent:Connect(function(player, action)
+			if action == "REQUEST_INVENTORY" then
+				local inventory = self:getPlayerInventory(player)
+				inventoryRemote:FireClient(player, "UPDATE_INVENTORY", inventory)
+				print("📡 Sent inventory to", player.Name .. ":", inventory.coins, "coins")
+			end
+		end)
+	end
+end
+
+function EnemyDropManager:initializePlayerInventory(player)
+	self.playerInventories[player.UserId] = {
+		coins = 0,
+		bombs = 0,
+		keys = 0,
+		player = player
+	}
+	print("💰 Initialized inventory for:", player.Name)
+end
+
+function EnemyDropManager:getPlayerInventory(player)
+	return self.playerInventories[player.UserId] or self:initializePlayerInventory(player)
+end
+
+function EnemyDropManager:addToInventory(player, itemType, amount)
+	local inventory = self:getPlayerInventory(player)
+	amount = amount or 1
+
+	if itemType == "COIN" then
+		inventory.coins = inventory.coins + amount
+		print("💰", player.Name, "gained", amount, "coins! Total:", inventory.coins)
+	elseif itemType == "BOMB" then
+		inventory.bombs = inventory.bombs + amount  
+		print("💣", player.Name, "gained", amount, "bombs! Total:", inventory.bombs)
+	elseif itemType == "KEY" then
+		inventory.keys = inventory.keys + amount
+		print("🗝️", player.Name, "gained", amount, "keys! Total:", inventory.keys)
+	end
+
+	-- Send real-time update to client UI
+	self:sendInventoryUpdateToClient(player, itemType, amount)
+
+	-- Trigger UI update if you have inventory UI
+	self:updatePlayerInventoryUI(player)
+end
+
+function EnemyDropManager:sendInventoryUpdateToClient(player, itemType, amount)
+	local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+	if inventoryRemote then
+		pcall(function()
+			-- Send specific item update for animation
+			local updateType = "ADD_" .. itemType .. "S" -- ADD_COINS, ADD_BOMBS, ADD_KEYS
+			inventoryRemote:FireClient(player, updateType, {amount = amount})
+			print("📡 Sent", updateType, "to", player.Name, "- Amount:", amount)
+
+			-- Also send full inventory for sync
+			local inventory = self:getPlayerInventory(player)
+			inventoryRemote:FireClient(player, "UPDATE_INVENTORY", inventory)
+			print("📡 Sent full inventory to", player.Name .. ":", inventory.coins, "coins,", inventory.bombs, "bombs,", inventory.keys, "keys")
+		end)
+	else
+		warn("❌ InventoryUpdate RemoteEvent not found!")
+	end
+end
+
+function EnemyDropManager:updatePlayerInventoryUI(player)
+	-- Placeholder for future inventory UI updates
+	-- You can expand this when you build the inventory display
+end
+
+-- ========================================================================
+-- ENEMY DEATH INTEGRATION
+-- ========================================================================
+
+function EnemyDropManager:hookIntoEnemyDeaths()
+	print("🔗 Hooking into enemy death detection...")
+
+	-- Method 1: Hook into existing systems
+	self:hookIntoExistingSystems()
+
+	-- Method 2: Direct monitoring (backup)
+	self:startDirectMonitoring()
+
+	print("✅ Enemy death detection active!")
+end
+
+function EnemyDropManager:hookIntoExistingSystems()
+	-- Hook into RoomManager if available
+	if _G.RoomManager then
+		_G.RoomManager:onEnemyDied(function(roomData, enemy, remainingEnemies)
+			self:onEnemyDeath(enemy, roomData)
+		end)
+		print("🔗 Connected to RoomManager enemy deaths")
+	end
+
+	-- Hook into EnemySpawner if available
+	spawn(function()
+		task.wait(2) -- Wait for systems to load
+		if _G.EnemySpawner then
+			-- We'll enhance this by monitoring enemies directly
+			print("🔗 Connected to EnemySpawner system")
+		end
+	end)
+end
+
+function EnemyDropManager:startDirectMonitoring()
+	-- Monitor all tagged enemies for death
+	spawn(function()
+		while true do
+			-- Check all room enemies
+			local roomEnemies = CollectionService:GetTagged("RoomEnemy")
+			for _, enemy in pairs(roomEnemies) do
+				if enemy:FindFirstChild("Humanoid") then
+					local humanoid = enemy.Humanoid
+
+					-- Check if enemy just died and hasn't been processed
+					if humanoid.Health <= 0 and not enemy:GetAttribute("DropProcessed") then
+						enemy:SetAttribute("DropProcessed", true)
+						self:onEnemyDeath(enemy)
+					end
+				end
+			end
+
+			task.wait(0.1) -- Check every 0.1 seconds
+		end
+	end)
+end
+
+-- ========================================================================
+-- DROP GENERATION
+-- ========================================================================
+
+function EnemyDropManager:onEnemyDeath(enemy, roomData)
+	print("💀 Enemy died, checking for drops:", enemy.Name)
+
+	-- Determine if this is a boss
+	local isBoss = self:isBossEnemy(enemy)
+	local dropPosition = self:getEnemyPosition(enemy)
+
+	if not dropPosition then
+		warn("❌ Could not get enemy position for drops")
+		return
+	end
+
+	-- Generate drops
+	if isBoss then
+		self:generateBossDrops(dropPosition, enemy)
+	else
+		self:generateNormalDrops(dropPosition, enemy)
+	end
+end
+
+function EnemyDropManager:isBossEnemy(enemy)
+	local enemyName = string.lower(enemy.Name or "")
+	return string.find(enemyName, "boss") or 
+		CollectionService:HasTag(enemy, "Boss") or
+		enemy:GetAttribute("IsBoss") == true
+end
+
+function EnemyDropManager:getEnemyPosition(enemy)
+	if enemy.PrimaryPart then
+		return enemy.PrimaryPart.Position
+	end
+
+	local humanoidRootPart = enemy:FindFirstChild("HumanoidRootPart")
+	if humanoidRootPart then
+		return humanoidRootPart.Position
+	end
+
+	-- Fallback: any BasePart
+	local anyPart = enemy:FindFirstChildOfClass("BasePart")
+	if anyPart then
+		return anyPart.Position
+	end
+
+	return nil
+end
+
+function EnemyDropManager:generateNormalDrops(position, enemy)
+	-- Single drop chance for normal enemies
+	local dropType = self:rollForDrop()
+
+	if dropType then
+		self:spawnDrop(dropType, position, 1)
+		print("📦 Normal enemy dropped:", dropType)
+	else
+		print("📦 Normal enemy dropped: nothing")
+	end
+end
+
+function EnemyDropManager:generateBossDrops(position, enemy)
+	print("👑 BOSS KILLED! Generating enhanced drops...")
+
+	local dropsToSpawn = {}
+
+	-- Guaranteed drops for bosses
+	for i = 1, DROP_CONFIG.BOSS_GUARANTEED_DROPS do
+		local dropType = self:rollForDrop(true) -- Enhanced chances for bosses
+		if dropType then
+			table.insert(dropsToSpawn, dropType)
+		end
+	end
+
+	-- Additional bonus drops
+	for i = 1, DROP_CONFIG.BOSS_DROP_MULTIPLIER - DROP_CONFIG.BOSS_GUARANTEED_DROPS do
+		local dropType = self:rollForDrop(true)
+		if dropType then
+			table.insert(dropsToSpawn, dropType)
+		end
+	end
+
+	-- Spawn all drops with spread
+	for i, dropType in pairs(dropsToSpawn) do
+		local spawnPos = position + Vector3.new(
+			(math.random() - 0.5) * DROP_CONFIG.DROP_SPREAD_RADIUS * 2,
+			0,
+			(math.random() - 0.5) * DROP_CONFIG.DROP_SPREAD_RADIUS * 2
+		)
+
+		spawn(function()
+			task.wait(i * 0.2) -- Stagger drops
+			self:spawnDrop(dropType, spawnPos, 1)
+		end)
+	end
+
+	print("👑 Boss dropped", #dropsToSpawn, "items!")
+end
+
+function EnemyDropManager:rollForDrop(isBoss)
+	local roll = math.random(1, 100)
+	local chances = DROP_CONFIG
+
+	-- Enhanced chances for bosses
+	if isBoss then
+		-- Bosses have better drop rates
+		if roll <= chances.RARE_ITEM_CHANCE * 3 then
+			return self:selectRandomItem() -- Boss might drop actual items
+		elseif roll <= chances.COIN_CHANCE * 1.5 then
+			return "COIN"
+		elseif roll <= chances.COIN_CHANCE * 1.5 + chances.HEART_CHANCE * 2 then
+			return "HEART"
+		elseif roll <= chances.COIN_CHANCE * 1.5 + chances.HEART_CHANCE * 2 + chances.BOMB_CHANCE * 2 then
+			return "BOMB"
+		elseif roll <= chances.COIN_CHANCE * 1.5 + chances.HEART_CHANCE * 2 + chances.BOMB_CHANCE * 2 + chances.KEY_CHANCE * 2 then
+			return "KEY"
+		else
+			return "COIN" -- Default fallback for bosses
+		end
+	else
+		-- Normal enemy drops
+		if roll <= chances.COIN_CHANCE then
+			return "COIN"
+		elseif roll <= chances.COIN_CHANCE + chances.HEART_CHANCE then
+			return "HEART"
+		elseif roll <= chances.COIN_CHANCE + chances.HEART_CHANCE + chances.BOMB_CHANCE then
+			return "BOMB"
+		elseif roll <= chances.COIN_CHANCE + chances.HEART_CHANCE + chances.BOMB_CHANCE + chances.KEY_CHANCE then
+			return "KEY"
+		elseif roll <= chances.COIN_CHANCE + chances.HEART_CHANCE + chances.BOMB_CHANCE + chances.KEY_CHANCE + chances.RARE_ITEM_CHANCE then
+			return self:selectRandomItem()
+		else
+			return nil -- No drop
+		end
+	end
+end
+
+function EnemyDropManager:selectRandomItem()
+	-- Very rare chance to drop an actual item instead of currency
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase then
+			-- Get a random common item
+			local itemId = ItemDatabase:GetRandomItemFromPool("TREASURE_ROOM")
+			if itemId then
+				return "ITEM:" .. itemId -- Special format for actual items
+			end
+		end
+	end
+
+	return "COIN" -- Fallback to coin if no items available
+end
+
+-- ========================================================================
+-- DROP SPAWNING
+-- ========================================================================
+
+function EnemyDropManager:spawnDrop(dropType, position, amount)
+	amount = amount or 1
+
+	-- Handle special item drops
+	if string.find(dropType, "ITEM:") then
+		local itemId = string.gsub(dropType, "ITEM:", "")
+		return self:spawnItemDrop(itemId, position)
+	end
+
+	-- Handle currency drops
+	local config = DROP_TYPES[dropType]
+	if not config then
+		warn("❌ Unknown drop type:", dropType)
+		return
+	end
+
+	local template = self.dropModels[dropType]
+	if not template then
+		warn("❌ No model for drop type:", dropType)
+		return
+	end
+
+	-- Create the drop
+	local drop = template:Clone()
+	drop.Name = dropType .. "Drop_" .. tick()
+	drop.Parent = workspace
+
+	-- Position the drop
+	local spawnPosition = position + Vector3.new(0, DROP_CONFIG.DROP_SPAWN_HEIGHT, 0)
+	if drop.PrimaryPart then
+		drop:SetPrimaryPartCFrame(CFrame.new(spawnPosition))
+	else
+		-- Fallback positioning
+		local mainPart = drop:FindFirstChild("PickupPart") or drop:FindFirstChildOfClass("BasePart")
+		if mainPart then
+			mainPart.Position = spawnPosition
+		end
+	end
+
+	-- Setup pickup detection
+	self:setupDropPickup(drop, dropType, amount)
+
+	-- Animate drop entrance
+	self:animateDropSpawn(drop)
+
+	-- Track the drop
+	table.insert(self.activeDrops, {
+		drop = drop,
+		type = dropType,
+		amount = amount,
+		spawnTime = tick()
+	})
+
+	-- Setup cleanup timer
+	spawn(function()
+		task.wait(DROP_CONFIG.DROP_LIFETIME)
+		if drop.Parent then
+			self:animateDropDespawn(drop)
+		end
+	end)
+
+	print("📦 Spawned drop:", dropType, "x" .. amount, "at", spawnPosition)
+	return drop
+end
+
+function EnemyDropManager:spawnItemDrop(itemId, position)
+	-- Spawn an actual item instead of currency
+	if _G.ItemSpawner then
+		-- Find the nearest room
+		local nearestRoom = self:findNearestRoom(position)
+		if nearestRoom then
+			local spawnPosition = position + Vector3.new(0, DROP_CONFIG.DROP_SPAWN_HEIGHT, 0)
+			local item = _G.ItemSpawner:spawnItemInRoom(nearestRoom, itemId, spawnPosition)
+			if item then
+				print("🎁 Spawned rare item drop:", itemId)
+				return item
+			end
+		end
+	end
+
+	-- Fallback to coin if item spawning fails
+	return self:spawnDrop("COIN", position, 3) -- 3 coins instead of item
+end
+
+function EnemyDropManager:findNearestRoom(position)
+	-- Find the nearest room model for item spawning
+	local nearestRoom = nil
+	local nearestDistance = math.huge
+
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and string.find(obj.Name, "Room") then
+			local roomCenter = obj:FindFirstChild("Floor") or obj:FindFirstChildOfClass("BasePart")
+			if roomCenter then
+				local distance = (roomCenter.Position - position).Magnitude
+				if distance < nearestDistance then
+					nearestDistance = distance
+					nearestRoom = obj
+				end
+			end
+		end
+	end
+
+	return nearestRoom
+end
+
+-- ========================================================================
+-- ENHANCED PART DETECTION FOR COLLECTIBLE MODELS
+-- ========================================================================
+
+function EnemyDropManager:findMainPartInDrop(drop)
+	-- Method 1: Check PrimaryPart
+	if drop.PrimaryPart then
+		print("✅ Using PrimaryPart for pickup:", drop.PrimaryPart.Name)
+		return drop.PrimaryPart
+	end
+
+	-- Method 2: Look for common pickup part names
+	local commonNames = {"PickupPart", "MainPart", "Part", "Main", "Body", "Core"}
+	for _, name in pairs(commonNames) do
+		local part = drop:FindFirstChild(name)
+		if part and part:IsA("BasePart") then
+			print("✅ Found pickup part by name:", part.Name)
+			return part
+		end
+	end
+
+	-- Method 3: Find largest BasePart (likely the main visual)
+	local largestPart = nil
+	local largestVolume = 0
+
+	for _, child in pairs(drop:GetDescendants()) do
+		if child:IsA("BasePart") then
+			local volume = child.Size.X * child.Size.Y * child.Size.Z
+			if volume > largestVolume then
+				largestVolume = volume
+				largestPart = child
+			end
+		end
+	end
+
+	if largestPart then
+		print("✅ Using largest part for pickup:", largestPart.Name, "Volume:", largestVolume)
+		return largestPart
+	end
+
+	-- Method 4: Just use any BasePart
+	local anyPart = drop:FindFirstChildOfClass("BasePart")
+	if anyPart then
+		print("✅ Using first BasePart found:", anyPart.Name)
+		return anyPart
+	end
+
+	return nil
+end
+
+function EnemyDropManager:debugDropStructure(drop)
+	print("🔍 DEBUG: Drop structure for", drop.Name .. ":")
+	print("  PrimaryPart:", drop.PrimaryPart and drop.PrimaryPart.Name or "nil")
+
+	local partCount = 0
+	for _, child in pairs(drop:GetDescendants()) do
+		if child:IsA("BasePart") then
+			partCount = partCount + 1
+			print("  📦 BasePart found:", child.Name, "Size:", child.Size)
+		end
+	end
+
+	if partCount == 0 then
+		print("  ❌ NO BASEPARTS FOUND IN MODEL!")
+		print("  💡 Your collectible models need at least one Part/MeshPart/UnionOperation")
+	else
+		print("  📊 Total BaseParts:", partCount)
+	end
+end
+
+function EnemyDropManager:setupDropPickup(drop, dropType, amount)
+	-- Enhanced main part detection
+	local mainPart = self:findMainPartInDrop(drop)
+	if not mainPart then
+		warn("❌ No main part found for pickup detection in:", drop.Name)
+		self:debugDropStructure(drop)
+		return
+	end
+
+	-- Create proximity prompt
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Pickup"
+	prompt.ObjectText = DROP_TYPES[dropType] and DROP_TYPES[dropType].name or dropType
+	prompt.MaxActivationDistance = DROP_CONFIG.PICKUP_RANGE
+	prompt.HoldDuration = 0 -- Instant pickup
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = mainPart
+
+	-- Handle pickup
+	prompt.Triggered:Connect(function(player)
+		self:pickupDrop(player, drop, dropType, amount)
+	end)
+
+	-- Alternative: Automatic pickup on touch (classic Isaac style)
+	mainPart.Touched:Connect(function(hit)
+		local humanoid = hit.Parent:FindFirstChild("Humanoid")
+		if humanoid then
+			local player = Players:GetPlayerFromCharacter(hit.Parent)
+			if player then
+				self:pickupDrop(player, drop, dropType, amount)
+			end
+		end
+	end)
+end
+
+function EnemyDropManager:pickupDrop(player, drop, dropType, amount)
+	-- Prevent multiple pickups
+	if drop:GetAttribute("PickedUp") then
+		return
+	end
+	drop:SetAttribute("PickedUp", true)
+
+	print("📦", player.Name, "picked up:", dropType, "x" .. amount)
+
+	-- Apply the pickup effect
+	if dropType == "HEART" then
+		-- Heal the player using heart system
+		if _G.HeartSystem then
+			_G.HeartSystem:heal(amount)
+			print("💖 Healed", player.Name, "for", amount, "hits")
+		elseif _G.ItemEffects then
+			-- Alternative: use ItemEffects healing
+			local playerData = _G.ItemEffects:GetPlayerData(player)
+			if playerData then
+				playerData.stats.currentHearts = math.min(
+					playerData.stats.maxHearts * 2,
+					playerData.stats.currentHearts + amount
+				)
+				_G.ItemEffects:ApplyStatsToCharacter(player)
+			end
+		end
+	else
+		-- Add to inventory (coins, bombs, keys)
+		self:addToInventory(player, dropType, amount)
+	end
+
+	-- Animate pickup
+	self:animateDropPickup(drop, player)
+
+	-- Remove from tracking
+	for i = #self.activeDrops, 1, -1 do
+		if self.activeDrops[i].drop == drop then
+			table.remove(self.activeDrops, i)
+			break
+		end
+	end
+end
+
+-- ========================================================================
+-- ANIMATIONS
+-- ========================================================================
+
+function EnemyDropManager:animateDropSpawn(drop)
+	local mainPart = drop.PrimaryPart or drop:FindFirstChildOfClass("BasePart")
+	if not mainPart then return end
+
+	-- Start small and grow
+	local originalSize = mainPart.Size
+	mainPart.Size = Vector3.new(0.1, 0.1, 0.1)
+
+	-- Bounce and scale animation
+	local bouncePosition = mainPart.Position + Vector3.new(0, DROP_CONFIG.DROP_BOUNCE_HEIGHT, 0)
+
+	-- Scale up
+	local scaleTween = TweenService:Create(mainPart,
+		TweenInfo.new(DROP_CONFIG.DROP_BOUNCE_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{Size = originalSize}
+	)
+
+	-- Bounce down
+	local bounceTween = TweenService:Create(mainPart,
+		TweenInfo.new(DROP_CONFIG.DROP_BOUNCE_TIME, Enum.EasingStyle.Bounce, Enum.EasingDirection.Out),
+		{Position = mainPart.Position}
+	)
+
+	scaleTween:Play()
+
+	-- Move up then down for bounce effect
+	mainPart.Position = bouncePosition
+	bounceTween:Play()
+
+	-- Add gentle floating animation
+	spawn(function()
+		task.wait(DROP_CONFIG.DROP_BOUNCE_TIME)
+		self:addFloatingAnimation(mainPart)
+	end)
+end
+
+function EnemyDropManager:addFloatingAnimation(part)
+	local originalPosition = part.Position
+
+	local function createFloatLoop()
+		local upTween = TweenService:Create(part,
+			TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{Position = originalPosition + Vector3.new(0, 0.5, 0)}
+		)
+		local downTween = TweenService:Create(part,
+			TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{Position = originalPosition}
+		)
+
+		upTween.Completed:Connect(function()
+			if part.Parent then
+				downTween:Play()
+			end
+		end)
+		downTween.Completed:Connect(function()
+			if part.Parent then
+				createFloatLoop()
+			end
+		end)
+		upTween:Play()
+	end
+
+	createFloatLoop()
+end
+
+function EnemyDropManager:animateDropPickup(drop, player)
+	local mainPart = drop.PrimaryPart or drop:FindFirstChildOfClass("BasePart")
+	if not mainPart then return end
+
+	-- Get player position
+	local targetPosition = Vector3.new(0, 0, 0)
+	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		targetPosition = player.Character.HumanoidRootPart.Position + Vector3.new(0, 2, 0)
+	end
+
+	-- Animate towards player and shrink
+	local moveTween = TweenService:Create(mainPart,
+		TweenInfo.new(DROP_CONFIG.PICKUP_SCALE_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{
+			Position = targetPosition,
+			Size = Vector3.new(0.1, 0.1, 0.1)
+		}
+	)
+
+	moveTween:Play()
+	moveTween.Completed:Connect(function()
+		drop:Destroy()
+	end)
+end
+
+function EnemyDropManager:animateDropDespawn(drop)
+	local mainPart = drop.PrimaryPart or drop:FindFirstChildOfClass("BasePart")
+	if not mainPart then 
+		drop:Destroy()
+		return 
+	end
+
+	-- Fade out and shrink
+	local fadeTween = TweenService:Create(mainPart,
+		TweenInfo.new(1.0, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+		{
+			Transparency = 1,
+			Size = Vector3.new(0.1, 0.1, 0.1)
+		}
+	)
+
+	fadeTween:Play()
+	fadeTween.Completed:Connect(function()
+		drop:Destroy()
+	end)
+end
+
+-- ========================================================================
+-- PUBLIC API
+-- ========================================================================
+
+function EnemyDropManager:getPlayerInventory(player)
+	return self.playerInventories[player.UserId]
+end
+
+function EnemyDropManager:forceSpawnDrop(dropType, position, amount)
+	return self:spawnDrop(dropType, position, amount)
+end
+
+function EnemyDropManager:clearAllDrops()
+	for _, dropData in pairs(self.activeDrops) do
+		if dropData.drop.Parent then
+			dropData.drop:Destroy()
+		end
+	end
+	self.activeDrops = {}
+	print("🧹 Cleared all active drops")
+end
+
+function EnemyDropManager:getActiveDropCount()
+	return #self.activeDrops
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+-- Create global instance
+local enemyDropManager = EnemyDropManager.new()
+_G.EnemyDropManager = enemyDropManager
+
+-- Debug commands
+_G.SpawnTestDrop = function(dropType, amount)
+	local player = Players:GetPlayers()[1]
+	if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local position = player.Character.HumanoidRootPart.Position + Vector3.new(3, 0, 0)
+		enemyDropManager:forceSpawnDrop(dropType or "COIN", position, amount or 1)
+		print("✅ Spawned test drop:", dropType or "COIN")
+	end
+end
+
+_G.ShowInventory = function(playerName)
+	local player = playerName and Players:FindFirstChild(playerName) or Players:GetPlayers()[1]
+	if player then
+		local inventory = enemyDropManager:getPlayerInventory(player)
+		if inventory then
+			print("💰 INVENTORY FOR " .. player.Name .. ":")
+			print("  Coins:", inventory.coins)
+			print("  Bombs:", inventory.bombs) 
+			print("  Keys:", inventory.keys)
+		else
+			print("❌ No inventory found for", player.Name)
+		end
+	else
+		print("❌ Player not found")
+	end
+end
+
+_G.ClearAllDrops = function()
+	enemyDropManager:clearAllDrops()
+end
+
+_G.DropSystemStatus = function()
+	print("📊 ENEMY DROP SYSTEM STATUS:")
+	print("💎 Drop models loaded:", enemyDropManager:getLoadedModelCount())
+	print("📦 Active drops:", enemyDropManager:getActiveDropCount())
+	print("👥 Players with inventories:", #Players:GetPlayers())
+
+	-- Check RemoteEvent
+	local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+	print("📡 InventoryUpdate RemoteEvent:", inventoryRemote and "✅ EXISTS" or "❌ MISSING")
+
+	-- Show all player inventories
+	for _, player in pairs(Players:GetPlayers()) do
+		local inventory = enemyDropManager:getPlayerInventory(player)
+		if inventory then
+			print("  " .. player.Name .. ": 💰" .. inventory.coins .. " 💣" .. inventory.bombs .. " 🗝️" .. inventory.keys)
+		end
+	end
+end
+
+-- ========================================================================
+-- INITIALIZATION COMPLETE
+-- ========================================================================
+
+print("💎 Enemy Drop System loaded!")
+print("📋 Features:")
+print("  ✅ Automatic enemy death detection")
+print("  ✅ Isaac-style currency drops (coins, hearts, bombs, keys)")
+print("  ✅ Enhanced boss drops (3x multiplier)")
+print("  ✅ Rare item drops (2% chance)")
+print("  ✅ Player inventory tracking")
+print("  ✅ Animated pickups with physics")
+print("  ✅ Integration with existing heart system")
+print("  ✅ Fallback models created automatically")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.SpawnTestDrop('COIN', 5) - Spawn test drops")
+print("  _G.ShowInventory('PlayerName') - Show player inventory")
+print("  _G.ClearAllDrops() - Clear all active drops")
+print("  _G.DropSystemStatus() - Show system status")
+print("")
+print("📦 UPDATED MODEL DETECTION:")
+print("  ✅ Primary: ReplicatedStorage/GridAssets/Collectibles/")
+print("    - Keys/ (for KEY drops)")
+print("    - Bombs/ (for BOMB drops)")
+print("    - Hearts/ (for HEART drops)")
+print("    - Coins/ (for COIN drops)")
+print("  ⚠️ Fallback: ReplicatedStorage/DropModels/ (legacy)")
+print("    - DropModel_Coin, DropModel_Heart, etc.")
+print("")
+print("💡 WORKS WITH YOUR EXISTING STRUCTURE:")
+print("  The system will automatically use any models found in")
+print("  GridAssets/Collectibles subfolders!")
+print("")
+print("🎮 The system will work immediately with any existing models!")
+print("🎯 Enemy drops ready - kill enemies to test!")
