@@ -295,7 +295,8 @@ function EnemyDropManager:initializePlayerInventories()
 	end)
 
 	-- Handle inventory requests from clients
-	local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+	local remoteEventsFolder = ReplicatedStorage:WaitForChild("RemoteEvents")
+	local inventoryRemote = remoteEventsFolder:FindFirstChild("InventoryUpdate")
 	if inventoryRemote then
 		inventoryRemote.OnServerEvent:Connect(function(player, action)
 			if action == "REQUEST_INVENTORY" then
@@ -344,7 +345,8 @@ function EnemyDropManager:addToInventory(player, itemType, amount)
 end
 
 function EnemyDropManager:sendInventoryUpdateToClient(player, itemType, amount)
-	local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+	local remoteEventsFolder = ReplicatedStorage:WaitForChild("RemoteEvents")
+	local inventoryRemote = remoteEventsFolder:FindFirstChild("InventoryUpdate")
 	if inventoryRemote then
 		pcall(function()
 			-- Send specific item update for animation
@@ -1027,7 +1029,8 @@ _G.DropSystemStatus = function()
 	print("👥 Players with inventories:", #Players:GetPlayers())
 
 	-- Check RemoteEvent
-	local inventoryRemote = ReplicatedStorage:FindFirstChild("InventoryUpdate")
+	local remoteEventsFolder = ReplicatedStorage:WaitForChild("RemoteEvents")
+	local inventoryRemote = remoteEventsFolder:FindFirstChild("InventoryUpdate")
 	print("📡 InventoryUpdate RemoteEvent:", inventoryRemote and "✅ EXISTS" or "❌ MISSING")
 
 	-- Show all player inventories
