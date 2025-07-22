@@ -1,18 +1,24 @@
 -- ========================================================================
--- FIXED ISOMETRIC ATTACK SCRIPT - Y=2 SHOOTING HEIGHT
--- Shoots from Y=2 but hits exact ground coordinates where green ring shows
+-- FIXED ISOMETRIC ATTACK SCRIPT - INTEGRATED WITH ITEM SYSTEM
+-- Enhanced version of your existing script with stats and item integration
+-- Place in StarterPlayerScripts (replaces existing PlayerAttack)
 -- ========================================================================
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
 local Debris = game:GetService("Debris")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- RemoteEvent for server communication
+-- ========================================================================
+-- REMOTE EVENTS SETUP
+-- ========================================================================
+
+-- Main shooting remote (keeping your existing one)
 local shootRemote = ReplicatedStorage:FindFirstChild("IsaacShootRemote")
 if not shootRemote then
 	shootRemote = Instance.new("RemoteEvent")
@@ -20,19 +26,51 @@ if not shootRemote then
 	shootRemote.Parent = ReplicatedStorage
 end
 
+-- Stats update event from ItemEffects
+local statsUpdateEvent = ReplicatedStorage:FindFirstChild("UpdatePlayerStats")
+
 -- ========================================================================
--- CONFIGURATION
+-- CONFIGURATION (Enhanced with Item Integration)
 -- ========================================================================
 
 local CONFIG = {
+	-- Base stats (will be modified by items)
 	damage = 10,
 	speed = 50,
 	fireRate = 0.3,
-	maxRange = 20,  -- UPDATED: Max range from character (in studs)
+	maxRange = 20,
+
+	-- Visual settings
 	projectileSize = Vector3.new(1, 1, 1),
 	projectileColor = Color3.fromRGB(100, 150, 255),
-	shootingHeight = 2,  -- Shooting height from character
-	gravityStrength = 50  -- NEW: Gravity effect for bullet drop
+	shootingHeight = 2,
+	gravityStrength = 50,
+
+	-- Special effects (set by items)
+	piercing = false,
+	homing = false,
+	explosive = false,
+	spectral = false,
+	tripleShot = false,
+	quadShot = false,
+	laserTears = false
+}
+
+-- Track current player stats from ItemEffects
+local playerStats = {
+	damage = CONFIG.damage,
+	fireRate = CONFIG.fireRate,
+	shotSpeed = CONFIG.speed,
+	range = CONFIG.maxRange,
+
+	-- Special abilities from items
+	hasPiercingTears = false,
+	hasHomingTears = false,
+	hasExplosiveTears = false,
+	hasSpectralTears = false,
+	tripleShot = false,
+	quadShot = false,
+	laserTears = false
 }
 
 local lastShotTime = 0
@@ -40,10 +78,45 @@ local aimIndicator = nil
 local aimLine = nil
 
 -- ========================================================================
--- UTILITIES
+-- STATS INTEGRATION WITH ITEMEFFECTS
 -- ========================================================================
 
--- Raycast from mouse to ground with max range limit
+-- Listen for stats updates from server
+if statsUpdateEvent then
+	statsUpdateEvent.OnClientEvent:Connect(function(newStats)
+		if not newStats then return end
+
+		-- Update damage calculation
+		playerStats.damage = newStats.damage or CONFIG.damage
+
+		-- Update fire rate (lower = faster shooting)
+		local fireRateBonus = newStats.fireRate or 0
+		playerStats.fireRate = math.max(0.05, CONFIG.fireRate * (1 / (1 + fireRateBonus)))
+
+		-- Update shot speed
+		playerStats.shotSpeed = CONFIG.speed + ((newStats.shotSpeed or 0) * 5)
+
+		-- Update range
+		playerStats.range = CONFIG.maxRange + ((newStats.range or 0) * 2)
+
+		-- Update special abilities
+		playerStats.hasPiercingTears = newStats.hasPiercingTears or false
+		playerStats.hasHomingTears = newStats.hasHomingTears or false
+		playerStats.hasExplosiveTears = newStats.hasExplosiveTears or false
+		playerStats.hasSpectralTears = newStats.hasSpectralTears or false
+		playerStats.tripleShot = newStats.tripleShot or false
+		playerStats.quadShot = newStats.quadShot or false
+		playerStats.laserTears = newStats.laserTears or false
+
+		print("🎯 Updated attack stats - Damage:", playerStats.damage, "Fire Rate:", string.format("%.2f", playerStats.fireRate))
+	end)
+end
+
+-- ========================================================================
+-- UTILITIES (Your existing functions enhanced)
+-- ========================================================================
+
+-- Raycast from mouse to ground with dynamic range from stats
 local function getMouseWorldGroundPosition()
 	local mousePos = UserInputService:GetMouseLocation()
 	local ray = camera:ViewportPointToRay(mousePos.X, mousePos.Y)
@@ -58,22 +131,22 @@ local function getMouseWorldGroundPosition()
 
 	local worldPos = origin + direction * t
 
-	-- LIMIT TO MAX RANGE from character
+	-- Use dynamic range from player stats
 	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 		local charPos = player.Character.HumanoidRootPart.Position
 		local distance = ((Vector3.new(worldPos.X, 0, worldPos.Z) - Vector3.new(charPos.X, 0, charPos.Z)).Magnitude)
 
-		if distance > CONFIG.maxRange then
+		if distance > playerStats.range then
 			-- Clamp to max range in the same direction
 			local direction2D = (Vector3.new(worldPos.X, 0, worldPos.Z) - Vector3.new(charPos.X, 0, charPos.Z)).Unit
-			worldPos = Vector3.new(charPos.X, 0, charPos.Z) + direction2D * CONFIG.maxRange
+			worldPos = Vector3.new(charPos.X, 0, charPos.Z) + direction2D * playerStats.range
 		end
 	end
 
 	return worldPos
 end
 
--- Red click debug line
+-- Enhanced visual indicators (your existing functions)
 local function spawnDebugLine(position)
 	local part = Instance.new("Part")
 	part.Anchored = true
@@ -96,7 +169,6 @@ local function spawnDebugLine(position)
 	Debris:AddItem(part, 2)
 end
 
--- Green glowing ring
 local function createAimIndicator()
 	if aimIndicator then return end
 
@@ -124,7 +196,6 @@ local function updateAimIndicator(position)
 	aimIndicator.CFrame = CFrame.new(pos) * CFrame.Angles(math.rad(90), 0, 0)
 end
 
--- Green laser line from player to cursor
 local function updateAimLine(from, to)
 	if not aimLine then
 		aimLine = Instance.new("Part")
@@ -139,161 +210,261 @@ local function updateAimLine(from, to)
 
 	local distance = (to - from).Magnitude
 	local midpoint = (from + to) / 2
+	local direction = (to - from).Unit
+
 	aimLine.Size = Vector3.new(0.15, 0.15, distance)
-	aimLine.CFrame = CFrame.new(midpoint, to)
+	aimLine.CFrame = CFrame.new(midpoint, midpoint + direction)
 end
 
 -- ========================================================================
--- PROJECTILE
+-- ENHANCED PROJECTILE CREATION WITH ITEM EFFECTS
 -- ========================================================================
 
-local function createTravelingProjectile(startPos, initialDirection, targetPos)
+local function createProjectileVisual(startPos, targetPos)
 	local projectile = Instance.new("Part")
-	projectile.Anchored = true
-	projectile.CanCollide = false
-	projectile.Shape = Enum.PartType.Ball
+	projectile.Name = "PlayerProjectile"
 	projectile.Size = CONFIG.projectileSize
-	projectile.Color = CONFIG.projectileColor
+	projectile.Shape = Enum.PartType.Ball
 	projectile.Material = Enum.Material.Neon
+	projectile.CanCollide = false
+	projectile.Anchored = true
 	projectile.Position = startPos
-	projectile.Name = "LaserProjectile"
 	projectile.Parent = workspace
 
-	-- Enhanced glow effect for prettier visuals
+	-- Color based on special effects
+	if playerStats.hasExplosiveTears then
+		projectile.Color = Color3.fromRGB(255, 100, 0) -- Orange for explosive
+	elseif playerStats.hasPiercingTears then
+		projectile.Color = Color3.fromRGB(255, 255, 0) -- Yellow for piercing
+	elseif playerStats.hasSpectralTears then
+		projectile.Color = Color3.fromRGB(200, 200, 255) -- Light blue for spectral
+	else
+		projectile.Color = CONFIG.projectileColor
+	end
+
+	-- Enhanced visual effects for special tears
 	local light = Instance.new("PointLight")
-	light.Color = CONFIG.projectileColor
-	light.Brightness = 3
-	light.Range = 12
+	light.Color = projectile.Color
+	light.Brightness = playerStats.hasExplosiveTears and 3 or 2
+	light.Range = playerStats.hasExplosiveTears and 8 or 5
 	light.Parent = projectile
 
-	-- Add trailing effect
+	-- Trail effect
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = projectile
+
 	local trail = Instance.new("Trail")
-	local attachment1 = Instance.new("Attachment")
-	local attachment2 = Instance.new("Attachment")
-	attachment1.Position = Vector3.new(0, 0, 0.5)
-	attachment2.Position = Vector3.new(0, 0, -0.5)
-	attachment1.Parent = projectile
-	attachment2.Parent = projectile
-	trail.Attachment0 = attachment1
-	trail.Attachment1 = attachment2
-	trail.Color = ColorSequence.new(CONFIG.projectileColor)
+	trail.Attachment0 = attachment
+	trail.Attachment1 = attachment
+	trail.Color = ColorSequence.new(projectile.Color)
 	trail.Transparency = NumberSequence.new({
 		NumberSequenceKeypoint.new(0, 0.5),
 		NumberSequenceKeypoint.new(1, 1)
 	})
-	trail.Lifetime = 0.3
-	trail.MinLength = 0
+	trail.Lifetime = 0.5
 	trail.Parent = projectile
 
-	-- Ballistic trajectory calculation
-	local startTime = tick()
-	local lastPosition = startPos
-	local hasHit = false
+	return projectile
+end
 
-	-- Calculate initial velocity for ballistic trajectory
-	local horizontalDistance = ((Vector3.new(targetPos.X, 0, targetPos.Z) - Vector3.new(startPos.X, 0, startPos.Z)).Magnitude)
-	local heightDifference = targetPos.Y - startPos.Y
-	local timeToTarget = horizontalDistance / CONFIG.speed
+local function createTravelingProjectile(startPos, initialDirection, targetPos)
+	-- Create multiple projectiles for special shot patterns
+	local projectilesToCreate = 1
+	local angleSpread = 0
 
-	-- Initial velocity with arc to reach target
-	local initialVelocity = Vector3.new(
-		(targetPos.X - startPos.X) / timeToTarget,
-		(heightDifference / timeToTarget) + (CONFIG.gravityStrength * timeToTarget * 0.5),
-		(targetPos.Z - startPos.Z) / timeToTarget
-	)
+	if playerStats.tripleShot then
+		projectilesToCreate = 3
+		angleSpread = math.rad(15)
+	elseif playerStats.quadShot then
+		projectilesToCreate = 4
+		angleSpread = math.rad(12)
+	end
 
-	local connection
-	connection = RunService.Heartbeat:Connect(function()
-		local elapsed = tick() - startTime
+	for i = 1, projectilesToCreate do
+		-- Calculate target for each projectile (spread pattern)
+		local projectileTargetPos = targetPos
 
-		-- Max lifetime based on time to target + buffer
-		if elapsed > timeToTarget + 1 then
-			connection:Disconnect()
-			if projectile.Parent then projectile:Destroy() end
-			return
+		if projectilesToCreate > 1 then
+			local spreadOffset = angleSpread * (i - (projectilesToCreate + 1) / 2)
+			local spreadDirection = CFrame.Angles(0, spreadOffset, 0) * (targetPos - startPos).Unit
+			local spreadDistance = (targetPos - startPos).Magnitude * 0.8 -- Slightly closer for spread
+			projectileTargetPos = startPos + spreadDirection * spreadDistance
+			projectileTargetPos = Vector3.new(projectileTargetPos.X, 0, projectileTargetPos.Z) -- Keep on ground
 		end
 
-		-- Ballistic motion with gravity
-		local currentVelocity = Vector3.new(
-			initialVelocity.X,
-			initialVelocity.Y - CONFIG.gravityStrength * elapsed,  -- Apply gravity
-			initialVelocity.Z
+		local projectile = createProjectileVisual(startPos, projectileTargetPos)
+
+		-- YOUR EXACT BALLISTIC TRAJECTORY MATH
+		local startTime = tick()
+		local lastPosition = startPos
+		local hasHit = false
+
+		-- Calculate initial velocity for ballistic trajectory (YOUR MATH)
+		local horizontalDistance = ((Vector3.new(projectileTargetPos.X, 0, projectileTargetPos.Z) - Vector3.new(startPos.X, 0, startPos.Z)).Magnitude)
+		local heightDifference = projectileTargetPos.Y - startPos.Y
+		local timeToTarget = horizontalDistance / playerStats.shotSpeed
+
+		-- YOUR EXACT INITIAL VELOCITY CALCULATION
+		local initialVelocity = Vector3.new(
+			(projectileTargetPos.X - startPos.X) / timeToTarget,
+			(heightDifference / timeToTarget) + (CONFIG.gravityStrength * timeToTarget * 0.5),
+			(projectileTargetPos.Z - startPos.Z) / timeToTarget
 		)
 
-		local newPos = startPos + Vector3.new(
-			initialVelocity.X * elapsed,
-			initialVelocity.Y * elapsed - 0.5 * CONFIG.gravityStrength * elapsed * elapsed,  -- Ballistic Y
-			initialVelocity.Z * elapsed
-		)
+		local connection
+		connection = RunService.Heartbeat:Connect(function()
+			local elapsed = tick() - startTime
 
-		-- Check if projectile hit the ground or target
-		if newPos.Y <= targetPos.Y + 0.1 and not hasHit then
-			hasHit = true
+			-- YOUR EXACT TIMEOUT CHECK
+			if elapsed > timeToTarget + 1 then
+				connection:Disconnect()
+				if projectile.Parent then projectile:Destroy() end
+				return
+			end
 
-			-- Hit effect at target position
-			local explosion = Instance.new("Explosion")
-			explosion.Position = targetPos
-			explosion.BlastRadius = 3
-			explosion.BlastPressure = 0
-			explosion.Parent = workspace
+			-- YOUR EXACT BALLISTIC MOTION WITH GRAVITY
+			local currentVelocity = Vector3.new(
+				initialVelocity.X,
+				initialVelocity.Y - CONFIG.gravityStrength * elapsed,
+				initialVelocity.Z
+			)
 
-			-- Send hit to server
-			shootRemote:FireServer(nil, targetPos, CONFIG.damage, initialDirection)
+			local newPos = startPos + Vector3.new(
+				initialVelocity.X * elapsed,
+				initialVelocity.Y * elapsed - 0.5 * CONFIG.gravityStrength * elapsed * elapsed,
+				initialVelocity.Z * elapsed
+			)
 
-			-- Clean up projectile
-			connection:Disconnect()
-			if projectile.Parent then projectile:Destroy() end
-			return
-		end
+			-- YOUR EXACT GROUND HIT CHECK
+			if newPos.Y <= projectileTargetPos.Y + 0.1 and not hasHit then
+				hasHit = true
 
-		-- Collision detection during flight
-		if not hasHit then
-			local rayDirection = newPos - lastPosition
-			local rayParams = RaycastParams.new()
-			rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-			rayParams.FilterDescendantsInstances = {
-				player.Character,
-				projectile,
-				workspace:FindFirstChild("Baseplate")
-			}
-
-			local result = workspace:Raycast(lastPosition, rayDirection, rayParams)
-			if result and result.Instance then
-				local hitPart = result.Instance
-				if hitPart:IsA("BasePart") and hitPart.Name ~= "Baseplate" then
-					local hitPosition = result.Position
-
-					-- Fire hit event to server
-					shootRemote:FireServer(hitPart, hitPosition, CONFIG.damage, currentVelocity.Unit)
-
-					-- Visual effect
+				-- Enhanced hit effect based on item effects
+				if playerStats.hasExplosiveTears then
 					local explosion = Instance.new("Explosion")
-					explosion.Position = hitPosition
+					explosion.Position = projectileTargetPos
+					explosion.BlastRadius = 5
+					explosion.BlastPressure = 0
+					explosion.Parent = workspace
+				else
+					local explosion = Instance.new("Explosion")
+					explosion.Position = projectileTargetPos
 					explosion.BlastRadius = 3
 					explosion.BlastPressure = 0
 					explosion.Parent = workspace
+				end
 
-					hasHit = true
-					connection:Disconnect()
-					if projectile.Parent then projectile:Destroy() end
-					return
+				-- Send hit to server with enhanced data (using your server's exact format)
+				shootRemote:FireServer(nil, playerStats.damage, projectileTargetPos)
+
+				connection:Disconnect()
+				if projectile.Parent then projectile:Destroy() end
+				return
+			end
+
+			-- YOUR EXACT COLLISION DETECTION DURING FLIGHT
+			if not hasHit then
+				local rayDirection = newPos - lastPosition
+				local rayParams = RaycastParams.new()
+				rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+				rayParams.FilterDescendantsInstances = {
+					player.Character,
+					projectile,
+					workspace:FindFirstChild("Baseplate")
+				}
+
+				local result = workspace:Raycast(lastPosition, rayDirection, rayParams)
+				if result and result.Instance then
+					local hitPart = result.Instance
+					local hitPosition = result.Position
+
+					-- YOUR EXACT ENEMY DETECTION FROM PlayerAttackOLD
+					if hitPart and hitPart.Parent then
+						local humanoid = hitPart.Parent:FindFirstChild("Humanoid")
+
+						if humanoid and (
+							CollectionService:HasTag(hitPart.Parent, "RoomEnemy") or
+								string.find(string.lower(hitPart.Parent.Name or ""), "enemy") or
+								string.find(string.lower(hitPart.Parent.Name or ""), "fly") or
+								string.find(string.lower(hitPart.Parent.Name or ""), "spider") or
+								string.find(string.lower(hitPart.Parent.Name or ""), "gaper")
+							) then
+							hasHit = true
+							print("🎯 Projectile hit enemy:", hitPart.Parent.Name)
+
+							-- Send hit to server (YOUR EXACT FORMAT from PlayerAttackOLD)
+							shootRemote:FireServer(humanoid, playerStats.damage, hitPosition)
+
+							-- Move projectile to hit position and create effect (YOUR EXACT METHOD)
+							projectile.Position = hitPosition
+
+							-- Enhanced hit effect based on items
+							if playerStats.hasExplosiveTears then
+								local effect = Instance.new("Explosion")
+								effect.Position = hitPosition
+								effect.BlastRadius = 4
+								effect.BlastPressure = 0
+								effect.Parent = workspace
+							else
+								local effect = Instance.new("Explosion")
+								effect.Position = hitPosition
+								effect.BlastRadius = 3
+								effect.BlastPressure = 0
+								effect.Parent = workspace
+							end
+
+							-- YOUR EXACT CLEANUP METHOD
+							task.wait(0.1)
+							connection:Disconnect()
+							if projectile.Parent then
+								projectile:Destroy()
+							end
+
+							-- Exit early for non-piercing (like your original)
+							if not playerStats.hasPiercingTears then
+								return
+							end
+						end
+					end
+
+					-- Hit wall/obstacle (spectral tears pass through)
+					if not playerStats.hasSpectralTears and hitPart:IsA("BasePart") and hitPart.Name ~= "Baseplate" then
+						hasHit = true
+
+						-- Move projectile and show effect (YOUR METHOD)
+						projectile.Position = hitPosition
+
+						-- Small effect for hitting walls
+						local effect = Instance.new("Explosion")
+						effect.Position = hitPosition
+						effect.BlastRadius = 1
+						effect.BlastPressure = 0
+						effect.Parent = workspace
+
+						task.wait(0.1)
+						connection:Disconnect()
+						if projectile.Parent then
+							projectile:Destroy()
+						end
+						return
+					end
 				end
 			end
-		end
 
-		-- Update projectile position
-		projectile.Position = newPos
-		lastPosition = newPos
-	end)
+			-- YOUR EXACT POSITION UPDATE
+			projectile.Position = newPos
+			lastPosition = newPos
+		end)
+	end
 end
 
 -- ========================================================================
--- SHOOT FUNCTION (FIXED FOR Y=2 SHOOTING)
+-- ENHANCED SHOOT FUNCTION
 -- ========================================================================
 
 local function shoot()
 	local currentTime = tick()
-	if currentTime - lastShotTime < CONFIG.fireRate then return end
+	if currentTime - lastShotTime < playerStats.fireRate then return end
 
 	local character = player.Character
 	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
@@ -302,31 +473,26 @@ local function shoot()
 	local groundTarget = getMouseWorldGroundPosition()
 	if not groundTarget then return end
 
-	-- Shooting position at Y=2
+	-- Shooting position
 	local shootingPos = root.Position + Vector3.new(0, CONFIG.shootingHeight, 0)
-
-	-- Target position on ground (Y=0)
 	local targetPos = Vector3.new(groundTarget.X, 0, groundTarget.Z)
-
-	-- Calculate initial direction (for server communication)
 	local initialDirection = (targetPos - shootingPos).Unit
 
-	-- Visuals (still show ground targeting)
+	-- Update visuals
 	updateAimIndicator(groundTarget)
 	updateAimLine(Vector3.new(root.Position.X, 0.05, root.Position.Z), Vector3.new(groundTarget.X, 0.05, groundTarget.Z))
 	spawnDebugLine(groundTarget)
 
-	-- Create projectile with ballistic trajectory
+	-- Create enhanced projectile(s)
 	createTravelingProjectile(shootingPos, initialDirection, targetPos)
 
 	lastShotTime = currentTime
 
-	print("🎯 Ballistic shot from Y=" .. CONFIG.shootingHeight .. " to range:", 
-		math.floor(((targetPos - Vector3.new(root.Position.X, 0, root.Position.Z)).Magnitude)), "studs")
+	print("🎯 Enhanced shot - Damage:", playerStats.damage, "Range:", math.floor(((targetPos - Vector3.new(root.Position.X, 0, root.Position.Z)).Magnitude)), "studs")
 end
 
 -- ========================================================================
--- INPUT + AIM UPDATE
+-- INPUT AND UPDATES
 -- ========================================================================
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -336,7 +502,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
--- Update aim ring and line each frame
+-- Update aim indicators
 RunService.Heartbeat:Connect(function()
 	local target = getMouseWorldGroundPosition()
 	if target and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
@@ -348,7 +514,9 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
-print("✅ Enhanced Isometric Attack Script Loaded")
-print("🎯 Max Range: " .. CONFIG.maxRange .. " studs from character")
-print("🌌 Ballistic trajectory with bullet drop enabled")
-print("✨ Enhanced visuals: trails, better lighting, and arc motion")
+print("✅ Enhanced Player Attack Script Loaded with Item Integration!")
+print("🎯 Dynamic stats from ItemEffects system")
+print("⚡ Fire rate, damage, range affected by items")
+print("🌟 Special effects: piercing, explosive, spectral tears")
+print("🎮 Multi-shot patterns: triple shot, quad shot")
+print("🔗 Integrated with existing enemy damage systems")
