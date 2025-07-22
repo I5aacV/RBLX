@@ -1,0 +1,194 @@
+-- ========================================================================
+-- ISOMETRIC MOVEMENT SYSTEM
+-- Replaces default Roblox movement to work with isometric camera
+-- Place in StarterPlayerScripts
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
+local MOVE_SPEED = 16         -- Movement speed (studs per second)
+local SMOOTH_FACTOR = 0.8     -- How smooth movement feels (0-1)
+
+-- Input tracking
+local inputState = {
+	up = false,      -- W key
+	down = false,    -- S key  
+	left = false,    -- A key
+	right = false    -- D key
+}
+
+-- Movement state
+local moveDirection = Vector3.new(0, 0, 0)
+local bodyVelocity = nil
+
+-- ========================================================================
+-- MOVEMENT FUNCTIONS
+-- ========================================================================
+
+-- Calculate movement direction for isometric view
+local function updateMovementDirection()
+	local x = 0
+	local z = 0
+
+	-- Calculate direction based on isometric camera angle
+	-- In isometric view, we need to rotate movement by 45 degrees
+	if inputState.up then z = z - 1 end      -- W moves up-left
+	if inputState.down then z = z + 1 end    -- S moves down-right  
+	if inputState.left then x = x - 1 end    -- A moves down-left
+	if inputState.right then x = x + 1 end   -- D moves up-right
+
+	-- Convert to isometric movement (45-degree rotation)
+	local isoX = (x - z) * 0.707  -- cos(45°) ≈ 0.707
+	local isoZ = (x + z) * 0.707  -- sin(45°) ≈ 0.707
+
+	moveDirection = Vector3.new(isoX, 0, isoZ).Unit
+
+	-- If no input, stop moving
+	if x == 0 and z == 0 then
+		moveDirection = Vector3.new(0, 0, 0)
+	end
+end
+
+-- Apply movement to character
+local function applyMovement()
+	local character = player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+
+	local humanoidRootPart = character.HumanoidRootPart
+	local humanoid = character:FindFirstChild("Humanoid")
+
+	if not humanoid then return end
+
+	-- Create or update BodyVelocity for smooth movement
+	if not bodyVelocity then
+		bodyVelocity = Instance.new("BodyVelocity")
+		bodyVelocity.MaxForce = Vector3.new(4000, 0, 4000)  -- Only apply force on X and Z
+		bodyVelocity.Parent = humanoidRootPart
+	end
+
+	-- Calculate target velocity
+	local targetVelocity = moveDirection * MOVE_SPEED
+
+	-- Smooth movement interpolation
+	local currentVelocity = bodyVelocity.Velocity
+	local newVelocity = currentVelocity:Lerp(targetVelocity, SMOOTH_FACTOR)
+
+	-- Apply movement
+	bodyVelocity.Velocity = Vector3.new(newVelocity.X, 0, newVelocity.Z)
+
+	-- Update humanoid for animations
+	if moveDirection.Magnitude > 0 then
+		humanoid.WalkSpeed = MOVE_SPEED
+		-- You can add walking animations here if needed
+	else
+		humanoid.WalkSpeed = 0
+		-- You can add idle animations here if needed
+	end
+end
+
+-- Clean up BodyVelocity when character is removed
+local function cleanupMovement()
+	if bodyVelocity then
+		bodyVelocity:Destroy()
+		bodyVelocity = nil
+	end
+end
+
+-- ========================================================================
+-- INPUT HANDLING
+-- ========================================================================
+
+-- Handle key press
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	if input.KeyCode == Enum.KeyCode.W then
+		inputState.up = true
+		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.S then
+		inputState.down = true
+		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.A then
+		inputState.left = true
+		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.D then
+		inputState.right = true
+		updateMovementDirection()
+	end
+end)
+
+-- Handle key release
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	if input.KeyCode == Enum.KeyCode.W then
+		inputState.up = false
+		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.S then
+		inputState.down = false
+		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.A then
+		inputState.left = false
+		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.D then
+		inputState.right = false
+		updateMovementDirection()
+	end
+end)
+
+-- ========================================================================
+-- CHARACTER SETUP
+-- ========================================================================
+
+local function onCharacterAdded(character)
+	print("👤 CHARACTER SPAWNED - Setting up isometric movement...")
+
+	-- Wait for character to load
+	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+	local humanoid = character:WaitForChild("Humanoid")
+
+	-- Disable default Roblox movement
+	humanoid.PlatformStand = false
+	humanoid.WalkSpeed = 0  -- We'll control this manually
+
+	-- Clean up any existing movement
+	cleanupMovement()
+
+	print("✅ Isometric movement system ready!")
+end
+
+-- Handle character removal
+local function onCharacterRemoving()
+	cleanupMovement()
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+-- Connect to character events
+if player.Character then
+	onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(onCharacterAdded)
+player.CharacterRemoving:Connect(onCharacterRemoving)
+
+-- Start movement update loop
+RunService.Heartbeat:Connect(applyMovement)
+
+print("✅ Isometric Movement System loaded!")
+print("🎮 CONTROLS:")
+print("  WASD - Move in isometric directions")
+print("  📐 Movement rotated 45° for isometric camera")
+print("  🏃 Smooth physics-based movement")
+print("  ⚡ Speed:", MOVE_SPEED, "studs/second")
