@@ -22,7 +22,7 @@ local mouse = player:GetMouse()
 local zoom = 140              -- Default zoom distance
 local minZoom = 10            -- Minimum zoom 
 local maxZoom = 200           -- Maximum zoom
-local fieldOfView = 9         -- Low FOV for isometric look
+local fieldOfView = 15         -- Low FOV for isometric look
 local transparency = 0.5      -- Transparency for objects blocking view
 
 -- Room tracking
@@ -84,7 +84,9 @@ end
 -- ========================================================================
 
 local function setTransparency(object, transparency)
-	if object:IsA("BasePart") and object.Name ~= "HumanoidRootPart" then
+	if object:IsA("BasePart") and 
+		object.Name ~= "HumanoidRootPart" and 
+		object.Name ~= "CameraTrigger" then  -- Add this line
 		object.Transparency = transparency
 	end
 end
@@ -173,6 +175,7 @@ local function onCharacterAdded(character)
 	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 
 	-- Make HumanoidRootPart invisible
+
 	humanoidRootPart.Transparency = 1
 
 	-- Small delay for setup
