@@ -1,0 +1,233 @@
+-- FIXED ISAAC SHOOTING SYSTEM - CLIENT SIDE
+-- Place this in StarterPlayerScripts
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+
+-- Create RemoteEvent for server communication
+local shootRemote = ReplicatedStorage:FindFirstChild("IsaacShootRemote")
+if not shootRemote then
+	shootRemote = Instance.new("RemoteEvent")
+	shootRemote.Name = "IsaacShootRemote"
+	shootRemote.Parent = ReplicatedStorage
+end
+
+-- Simple configuration
+local CONFIG = {
+	damage = 10,
+	speed = 50,
+	fireRate = 0.3,
+	range = 100,
+	projectileSize = Vector3.new(1, 1, 1),
+	projectileColor = Color3.fromRGB(100, 150, 255)
+}
+
+-- System state
+local lastShotTime = 0
+local aimDirection = Vector3.new(0, 0, -1)
+local inputState = {up = false, down = false, left = false, right = false}
+
+-- Update aim direction from WASD
+local function updateAimDirection()
+	local x, z = 0, 0
+
+	if inputState.up then z = z - 1 end
+	if inputState.down then z = z + 1 end
+	if inputState.left then x = x - 1 end
+	if inputState.right then x = x + 1 end
+
+	if x ~= 0 or z ~= 0 then
+		aimDirection = Vector3.new(x, 0, z).Unit
+	end
+end
+
+-- Create visual projectile that travels and checks for hits
+local function createTravelingProjectile(startPos, direction)
+	local projectile = Instance.new("Part")
+	projectile.Name = "VisualProjectile"
+	projectile.Size = CONFIG.projectileSize
+	projectile.Color = CONFIG.projectileColor
+	projectile.Material = Enum.Material.Neon
+	projectile.Shape = Enum.PartType.Ball
+	projectile.CanCollide = false
+	projectile.Anchored = true
+	projectile.Position = startPos
+	projectile.Parent = workspace
+
+	-- Add glow
+	local light = Instance.new("PointLight")
+	light.Color = CONFIG.projectileColor
+	light.Brightness = 2
+	light.Range = 10
+	light.Parent = projectile
+
+	-- Track movement
+	local startTime = tick()
+	local lastPosition = startPos
+	local hasHit = false
+
+	local connection
+	connection = RunService.Heartbeat:Connect(function()
+		local elapsed = tick() - startTime
+		if elapsed > 2 then -- 2 second lifetime
+			connection:Disconnect()
+			if projectile.Parent then
+				projectile:Destroy()
+			end
+			return
+		end
+
+		-- Calculate new position
+		local newPos = startPos + direction * CONFIG.speed * elapsed
+
+		-- Check for hits between last position and new position
+		if not hasHit then
+			local raycastParams = RaycastParams.new()
+			raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+			raycastParams.FilterDescendantsInstances = {player.Character, projectile}
+
+			local rayDirection = newPos - lastPosition
+			local raycastResult = workspace:Raycast(lastPosition, rayDirection, raycastParams)
+
+			if raycastResult then
+				local hitPart = raycastResult.Instance
+				local hitPosition = raycastResult.Position
+
+				-- Check if we hit an enemy
+				if hitPart and hitPart.Parent then
+					local humanoid = hitPart.Parent:FindFirstChild("Humanoid")
+
+					if humanoid and (
+						CollectionService:HasTag(hitPart.Parent, "RoomEnemy") or
+							string.find(string.lower(hitPart.Parent.Name or ""), "enemy") or
+							string.find(string.lower(hitPart.Parent.Name or ""), "fly") or
+							string.find(string.lower(hitPart.Parent.Name or ""), "spider") or
+							string.find(string.lower(hitPart.Parent.Name or ""), "gaper")
+						) then
+						hasHit = true
+						print("🎯 Projectile hit enemy:", hitPart.Parent.Name)
+
+						-- Send hit to server
+						shootRemote:FireServer(humanoid, CONFIG.damage, hitPosition)
+
+						-- Move projectile to hit position and create effect
+						projectile.Position = hitPosition
+
+						-- Create hit effect
+						local effect = Instance.new("Explosion")
+						effect.Position = hitPosition
+						effect.BlastRadius = 3
+						effect.BlastPressure = 0
+						effect.Parent = workspace
+
+						-- Destroy projectile after brief delay so you can see the hit
+						task.wait(0.1)
+						connection:Disconnect()
+						if projectile.Parent then
+							projectile:Destroy()
+						end
+						return
+					end
+				end
+
+				-- Hit something else (wall, obstacle, etc.)
+				hasHit = true
+				projectile.Position = hitPosition
+
+				-- Small effect for hitting walls
+				local effect = Instance.new("Explosion")
+				effect.Position = hitPosition
+				effect.BlastRadius = 1
+				effect.BlastPressure = 0
+				effect.Parent = workspace
+
+				task.wait(0.1)
+				connection:Disconnect()
+				if projectile.Parent then
+					projectile:Destroy()
+				end
+				return
+			end
+		end
+
+		-- Update position and track last position
+		projectile.Position = newPos
+		lastPosition = newPos
+	end)
+
+	return projectile
+end
+
+-- Main shoot function
+local function shoot()
+	local currentTime = tick()
+	if currentTime - lastShotTime < CONFIG.fireRate then
+		return
+	end
+
+	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+
+	local humanoidRootPart = player.Character.HumanoidRootPart
+	local startPos = humanoidRootPart.Position + Vector3.new(0, 1, 0) + aimDirection * 2
+
+	-- Create traveling projectile that will check for hits as it moves
+	local visualProjectile = createTravelingProjectile(startPos, aimDirection)
+
+	lastShotTime = currentTime
+	print("💙 Shot projectile in direction:", aimDirection)
+end
+
+-- Input handling
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	-- Track WASD for aiming
+	if input.KeyCode == Enum.KeyCode.W then
+		inputState.up = true
+		updateAimDirection()
+	elseif input.KeyCode == Enum.KeyCode.S then
+		inputState.down = true
+		updateAimDirection()
+	elseif input.KeyCode == Enum.KeyCode.A then
+		inputState.left = true
+		updateAimDirection()
+	elseif input.KeyCode == Enum.KeyCode.D then
+		inputState.right = true
+		updateAimDirection()
+	end
+
+	-- Shoot with left click
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		shoot()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	-- Release WASD
+	if input.KeyCode == Enum.KeyCode.W then
+		inputState.up = false
+		updateAimDirection()
+	elseif input.KeyCode == Enum.KeyCode.S then
+		inputState.down = false
+		updateAimDirection()
+	elseif input.KeyCode == Enum.KeyCode.A then
+		inputState.left = false
+		updateAimDirection()
+	elseif input.KeyCode == Enum.KeyCode.D then
+		inputState.right = false
+		updateAimDirection()
+	end
+end)
+
+print("🎯 Fixed Isaac Shooting System loaded!")
+print("🎮 WASD to aim, Left Click to shoot")
+print("📡 Using RemoteEvents for server damage")
