@@ -1,0 +1,209 @@
+-- ========================================================================
+-- SIMPLE ISOMETRIC CAMERA SYSTEM
+-- Replace your RoomTrigger-Focus script with this
+-- Place in StarterPlayerScripts
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local mouse = player:GetMouse()
+
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
+-- Camera Settings
+local zoom = 140              -- Default zoom distance
+local minZoom = 10            -- Minimum zoom 
+local maxZoom = 200           -- Maximum zoom
+local fieldOfView = 9         -- Low FOV for isometric look
+local transparency = 0.5      -- Transparency for objects blocking view
+
+-- Room tracking
+local currentRoom = nil
+local roomEnterEvent = ReplicatedStorage:WaitForChild("PlayerEnteredRoom", 10)
+
+-- ========================================================================
+-- CAMERA SYSTEM
+-- ========================================================================
+
+-- Set camera to scriptable mode
+camera.CameraType = Enum.CameraType.Scriptable
+camera.FieldOfView = fieldOfView
+
+-- Mouse wheel zoom controls
+mouse.WheelForward:Connect(function()
+	zoom = math.max(minZoom, zoom - 10)
+	print("🔍 Zoomed in:", zoom)
+end)
+
+mouse.WheelBackward:Connect(function()
+	zoom = math.min(maxZoom, zoom + 10)
+	print("🔍 Zoomed out:", zoom)
+end)
+
+-- Main camera update loop
+local function updateCamera()
+	local character = player.Character
+	if character and character:FindFirstChild("HumanoidRootPart") then
+		local root = character.HumanoidRootPart
+
+		-- Isometric camera position (45-degree angle)
+		local offset = Vector3.new(zoom, zoom, zoom)
+		camera.CFrame = CFrame.new(root.Position + offset, root.Position)
+
+		-- Set audio listener
+		game:GetService("SoundService"):SetListener(Enum.ListenerType.ObjectCFrame, root)
+	end
+end
+
+-- ========================================================================
+-- CHARACTER ROTATION (Mouse Facing)
+-- ========================================================================
+
+local function updateCharacterRotation()
+	local character = player.Character
+	if character and character:FindFirstChild("HumanoidRootPart") then
+		local root = character.HumanoidRootPart
+		local target = mouse.Hit.Position
+		local newYTarget = root.Position.Y -- Keep Y position constant
+
+		-- Make character face mouse cursor
+		root.CFrame = CFrame.lookAt(root.Position, Vector3.new(target.X, newYTarget, target.Z))
+	end
+end
+
+-- ========================================================================
+-- TRANSPARENCY SYSTEM (Simple Version)
+-- ========================================================================
+
+local function setTransparency(object, transparency)
+	if object:IsA("BasePart") and object.Name ~= "HumanoidRootPart" then
+		object.Transparency = transparency
+	end
+end
+
+local lastHitParts = {}
+
+local function updateTransparency()
+	local character = player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+
+	local root = character.HumanoidRootPart
+	local cameraPosition = camera.CFrame.Position
+	local direction = (root.Position - cameraPosition).Unit
+	local distance = (root.Position - cameraPosition).Magnitude
+
+	-- Reset previous transparent parts
+	for _, part in pairs(lastHitParts) do
+		if part and part.Parent then
+			setTransparency(part, 0)
+		end
+	end
+	lastHitParts = {}
+
+	-- Find parts blocking the view
+	local ray = Ray.new(cameraPosition, direction * distance)
+	local hitPart = workspace:FindPartOnRay(ray, character)
+
+	while hitPart do
+		table.insert(lastHitParts, hitPart)
+		setTransparency(hitPart, transparency)
+
+		-- Continue ray from hit point
+		local hitPoint = ray.Origin + ray.Direction * distance
+		ray = Ray.new(hitPoint + direction * 0.1, direction * (distance * 0.9))
+		hitPart = workspace:FindPartOnRay(ray, character)
+	end
+end
+
+-- ========================================================================
+-- ROOM TRACKING
+-- ========================================================================
+
+local function checkCurrentRoom()
+	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+
+	local humanoidRootPart = player.Character.HumanoidRootPart
+	local playerPosition = humanoidRootPart.Position
+	local triggers = CollectionService:GetTagged("RoomTrigger")
+
+	for _, trigger in pairs(triggers) do
+		local triggerPosition = trigger.Position
+		local triggerSize = trigger.Size
+		local minBounds = triggerPosition - (triggerSize / 2)
+		local maxBounds = triggerPosition + (triggerSize / 2)
+
+		local inTrigger = playerPosition.X >= minBounds.X and playerPosition.X <= maxBounds.X and
+			playerPosition.Y >= minBounds.Y and playerPosition.Y <= maxBounds.Y and
+			playerPosition.Z >= minBounds.Z and playerPosition.Z <= maxBounds.Z
+
+		if inTrigger then
+			local roomID = trigger:GetAttribute("RoomID")
+			if roomID and currentRoom ~= roomID then
+				currentRoom = roomID
+				print("🚪 ENTERED ROOM:", roomID, "(isometric view)")
+
+				if roomEnterEvent then
+					roomEnterEvent:FireServer(roomID)
+					print("📡 Sent room change to server:", roomID)
+				end
+			end
+			return
+		end
+	end
+end
+
+-- ========================================================================
+-- CHARACTER SETUP
+-- ========================================================================
+
+local function onCharacterAdded(character)
+	print("👤 CHARACTER SPAWNED - Starting isometric camera...")
+
+	-- Wait for character to load
+	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+	-- Make HumanoidRootPart invisible
+	humanoidRootPart.Transparency = 1
+
+	-- Small delay for setup
+	task.wait(0.1)
+	print("✅ Isometric camera system active!")
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+-- Connect to character spawning
+if player.Character then
+	onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- Start update loops
+RunService.RenderStepped:Connect(function()
+	updateCamera()
+	updateCharacterRotation()
+	checkCurrentRoom()
+end)
+
+-- Update transparency less frequently for performance
+RunService.Heartbeat:Connect(updateTransparency)
+
+print("✅ Simple Isometric Camera System loaded!")
+print("🎮 CONTROLS:")
+print("  🖱️ Mouse Wheel - Zoom in/out")
+print("  🖱️ Mouse Movement - Character faces cursor")
+print("📐 Fixed 45° isometric angle")
+print("👻 Objects blocking view become transparent")
+print("🎥 FOV set to", fieldOfView, "for classic isometric look")
