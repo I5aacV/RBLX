@@ -1,0 +1,193 @@
+-- ========================================================================
+-- SHOP UI CONFIGURATION MODULE
+-- Place this in ReplicatedStorage > Modules > ShopUIConfig
+-- Easily customize your shop's appearance here!
+-- ========================================================================
+
+local ShopUIConfig = {}
+
+-- ========================================================================
+-- EASY CUSTOMIZATION SETTINGS
+-- ========================================================================
+
+-- Main Shop Window
+ShopUIConfig.SHOP_SIZE = UDim2.new(0, 600, 0, 400) -- Width, Height
+ShopUIConfig.SHOP_BACKGROUND_COLOR = Color3.new(0.1, 0.1, 0.1) -- Dark gray
+ShopUIConfig.SHOP_BORDER_COLOR = Color3.new(0.8, 0.6, 0.2) -- Gold border
+ShopUIConfig.SHOP_CORNER_RADIUS = 12 -- Rounded corners
+
+-- Title Bar
+ShopUIConfig.TITLE_TEXT = "🏪 SHOP"
+ShopUIConfig.TITLE_COLOR = Color3.new(0.8, 0.6, 0.2) -- Gold background
+ShopUIConfig.TITLE_TEXT_COLOR = Color3.new(0, 0, 0) -- Black text
+ShopUIConfig.TITLE_HEIGHT = 50
+
+-- Close Button
+ShopUIConfig.CLOSE_BUTTON_COLOR = Color3.new(0.8, 0.2, 0.2) -- Red
+ShopUIConfig.CLOSE_BUTTON_TEXT = "✕"
+ShopUIConfig.CLOSE_BUTTON_SIZE = 40
+
+-- Item Frames
+ShopUIConfig.ITEM_HEIGHT = 80
+ShopUIConfig.ITEM_SPACING = 10
+ShopUIConfig.ITEM_BACKGROUND_COLOR = Color3.new(0.2, 0.2, 0.2)
+ShopUIConfig.ITEM_CORNER_RADIUS = 8
+
+-- Buy Buttons
+ShopUIConfig.BUY_BUTTON_COLOR = Color3.new(0.2, 0.8, 0.2) -- Green
+ShopUIConfig.UNIQUE_BUTTON_COLOR = Color3.new(1, 0.8, 0.2) -- Gold for unique items
+ShopUIConfig.SOLD_BUTTON_COLOR = Color3.new(0.5, 0.5, 0.5) -- Gray
+ShopUIConfig.BUY_BUTTON_TEXT = "BUY"
+ShopUIConfig.SOLD_BUTTON_TEXT = "SOLD"
+ShopUIConfig.BUY_BUTTON_CORNER_RADIUS = 6
+
+-- Animations
+ShopUIConfig.OPEN_ANIMATION_TIME = 0.3
+ShopUIConfig.CLOSE_ANIMATION_TIME = 0.2
+ShopUIConfig.ANIMATION_STYLE = Enum.EasingStyle.Back
+
+-- Rarity Colors (you can change these!)
+ShopUIConfig.RARITY_COLORS = {
+	COMMON = Color3.new(0.7, 0.7, 0.7),     -- Light gray
+	UNCOMMON = Color3.new(0.2, 0.8, 0.2),   -- Green
+	RARE = Color3.new(0.2, 0.5, 1),         -- Blue
+	LEGENDARY = Color3.new(0.8, 0.4, 1),    -- Purple
+	BLESSED = Color3.new(1, 0.8, 0.2),      -- Gold
+	CURSED = Color3.new(0.8, 0.2, 0.2)      -- Red
+}
+
+-- Unique Item Effects
+ShopUIConfig.UNIQUE_GLOW_COLOR = Color3.new(1, 0.8, 0.2) -- Gold glow
+ShopUIConfig.UNIQUE_GLOW_TRANSPARENCY = 0.7
+ShopUIConfig.UNIQUE_INDICATOR = "⭐ " -- Star prefix for unique items
+ShopUIConfig.UNIQUE_DISCOUNT_TEXT = " (20% OFF!)"
+
+-- Fonts
+ShopUIConfig.TITLE_FONT = Enum.Font.SourceSansBold
+ShopUIConfig.ITEM_NAME_FONT = Enum.Font.SourceSansBold
+ShopUIConfig.ITEM_RARITY_FONT = Enum.Font.SourceSans
+ShopUIConfig.BUTTON_FONT = Enum.Font.SourceSansBold
+ShopUIConfig.PRICE_FONT = Enum.Font.SourceSansBold
+
+-- Text Colors
+ShopUIConfig.PRICE_COLOR = Color3.new(1, 0.8, 0.2) -- Gold
+ShopUIConfig.UNIQUE_TEXT_COLOR = Color3.new(1, 0.8, 0.2) -- Gold
+ShopUIConfig.NORMAL_TEXT_COLOR = Color3.new(0.8, 0.8, 0.8) -- Light gray
+ShopUIConfig.BUTTON_TEXT_COLOR = Color3.new(1, 1, 1) -- White
+
+-- ========================================================================
+-- HELPER FUNCTIONS
+-- ========================================================================
+
+function ShopUIConfig:GetRarityColor(rarity)
+	return self.RARITY_COLORS[rarity] or self.RARITY_COLORS.COMMON
+end
+
+function ShopUIConfig:CreateCorner(radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius or 8)
+	return corner
+end
+
+function ShopUIConfig:CreatePadding(padding)
+	local uiPadding = Instance.new("UIPadding")
+	uiPadding.PaddingTop = UDim.new(0, padding)
+	uiPadding.PaddingBottom = UDim.new(0, padding)
+	uiPadding.PaddingLeft = UDim.new(0, padding)
+	uiPadding.PaddingRight = UDim.new(0, padding)
+	return uiPadding
+end
+
+-- ========================================================================
+-- PRESET THEMES (uncomment one to use!)
+-- ========================================================================
+
+-- Uncomment this function and call it to use a preset theme:
+
+--[[
+function ShopUIConfig:ApplyDarkTheme()
+	self.SHOP_BACKGROUND_COLOR = Color3.new(0.05, 0.05, 0.05)
+	self.SHOP_BORDER_COLOR = Color3.new(0.3, 0.3, 0.3)
+	self.TITLE_COLOR = Color3.new(0.15, 0.15, 0.15)
+	self.ITEM_BACKGROUND_COLOR = Color3.new(0.1, 0.1, 0.1)
+end
+
+function ShopUIConfig:ApplyNeonTheme()
+	self.SHOP_BACKGROUND_COLOR = Color3.new(0.05, 0.05, 0.15)
+	self.SHOP_BORDER_COLOR = Color3.new(0, 1, 1)
+	self.TITLE_COLOR = Color3.new(0, 0.8, 1)
+	self.BUY_BUTTON_COLOR = Color3.new(0, 0.8, 1)
+	self.UNIQUE_BUTTON_COLOR = Color3.new(1, 0, 1)
+end
+
+function ShopUIConfig:ApplyRetroTheme()
+	self.SHOP_BACKGROUND_COLOR = Color3.new(0.4, 0.2, 0.1)
+	self.SHOP_BORDER_COLOR = Color3.new(1, 0.7, 0.3)
+	self.TITLE_COLOR = Color3.new(0.8, 0.4, 0.1)
+	self.BUY_BUTTON_COLOR = Color3.new(0.6, 0.8, 0.2)
+end
+--]]
+
+-- ========================================================================
+-- CUSTOM ITEM FRAME CREATION (for advanced users)
+-- ========================================================================
+
+function ShopUIConfig:CreateCustomItemFrame(itemData, index, parent)
+	-- Override this function to completely customize item appearance
+	-- Return nil to use default creation
+	return nil
+end
+
+function ShopUIConfig:OnItemFrameCreated(itemFrame, itemData, index)
+	-- This function is called after each item frame is created
+	-- Use this to add custom effects, animations, etc.
+
+	-- Example: Add a subtle glow to legendary items
+	if itemData.rarity == "LEGENDARY" then
+		-- Add custom legendary effect here
+	end
+end
+
+-- ========================================================================
+-- EXPORT
+-- ========================================================================
+
+return ShopUIConfig
+
+--[[
+🎨 HOW TO CUSTOMIZE YOUR SHOP:
+
+1. BASIC CUSTOMIZATION:
+   - Change colors by modifying the values at the top
+   - Adjust sizes, fonts, and text
+   - Easy one-line changes!
+
+2. THEMES:
+   - Uncomment one of the preset theme functions
+   - Call it like: ShopUIConfig:ApplyDarkTheme()
+
+3. ADVANCED CUSTOMIZATION:
+   - Override CreateCustomItemFrame() for completely custom items
+   - Use OnItemFrameCreated() to add effects after creation
+   - Modify any values you want!
+
+4. EXAMPLES:
+   -- Make shop bigger:
+   ShopUIConfig.SHOP_SIZE = UDim2.new(0, 800, 0, 600)
+   
+   -- Change title:
+   ShopUIConfig.TITLE_TEXT = "🛒 ITEM SHOP"
+   
+   -- Different buy button color:
+   ShopUIConfig.BUY_BUTTON_COLOR = Color3.new(1, 0.5, 0) -- Orange
+   
+   -- Custom rarity color:
+   ShopUIConfig.RARITY_COLORS.LEGENDARY = Color3.new(1, 0, 1) -- Magenta
+
+📁 SETUP:
+1. Create folder: ReplicatedStorage > Modules
+2. Create ModuleScript: Modules > ShopUIConfig
+3. Paste this code into the ModuleScript
+4. Modify the client script to require this module
+5. Customize to your heart's content!
+--]]
