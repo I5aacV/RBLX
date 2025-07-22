@@ -1,15 +1,18 @@
--- FIXED ISAAC SHOOTING SYSTEM - CLIENT SIDE
--- Place this in StarterPlayerScripts
+-- ========================================================================
+-- FIXED ISOMETRIC ATTACK SCRIPT - Y=2 SHOOTING HEIGHT
+-- Shoots from Y=2 but hits exact ground coordinates where green ring shows
+-- ========================================================================
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
 
 local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
 
--- Create RemoteEvent for server communication
+-- RemoteEvent for server communication
 local shootRemote = ReplicatedStorage:FindFirstChild("IsaacShootRemote")
 if not shootRemote then
 	shootRemote = Instance.new("RemoteEvent")
@@ -17,217 +20,335 @@ if not shootRemote then
 	shootRemote.Parent = ReplicatedStorage
 end
 
--- Simple configuration
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
 local CONFIG = {
 	damage = 10,
 	speed = 50,
 	fireRate = 0.3,
-	range = 100,
+	maxRange = 20,  -- UPDATED: Max range from character (in studs)
 	projectileSize = Vector3.new(1, 1, 1),
-	projectileColor = Color3.fromRGB(100, 150, 255)
+	projectileColor = Color3.fromRGB(100, 150, 255),
+	shootingHeight = 2,  -- Shooting height from character
+	gravityStrength = 50  -- NEW: Gravity effect for bullet drop
 }
 
--- System state
 local lastShotTime = 0
-local aimDirection = Vector3.new(0, 0, -1)
-local inputState = {up = false, down = false, left = false, right = false}
+local aimIndicator = nil
+local aimLine = nil
 
--- Update aim direction from WASD
-local function updateAimDirection()
-	local x, z = 0, 0
+-- ========================================================================
+-- UTILITIES
+-- ========================================================================
 
-	if inputState.up then z = z - 1 end
-	if inputState.down then z = z + 1 end
-	if inputState.left then x = x - 1 end
-	if inputState.right then x = x + 1 end
+-- Raycast from mouse to ground with max range limit
+local function getMouseWorldGroundPosition()
+	local mousePos = UserInputService:GetMouseLocation()
+	local ray = camera:ViewportPointToRay(mousePos.X, mousePos.Y)
+	local origin = ray.Origin
+	local direction = ray.Direction
+	local planeY = 0
 
-	if x ~= 0 or z ~= 0 then
-		aimDirection = Vector3.new(x, 0, z).Unit
+	if math.abs(direction.Y) < 1e-4 then return nil end
+
+	local t = (planeY - origin.Y) / direction.Y
+	if t < 0 then return nil end
+
+	local worldPos = origin + direction * t
+
+	-- LIMIT TO MAX RANGE from character
+	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local charPos = player.Character.HumanoidRootPart.Position
+		local distance = ((Vector3.new(worldPos.X, 0, worldPos.Z) - Vector3.new(charPos.X, 0, charPos.Z)).Magnitude)
+
+		if distance > CONFIG.maxRange then
+			-- Clamp to max range in the same direction
+			local direction2D = (Vector3.new(worldPos.X, 0, worldPos.Z) - Vector3.new(charPos.X, 0, charPos.Z)).Unit
+			worldPos = Vector3.new(charPos.X, 0, charPos.Z) + direction2D * CONFIG.maxRange
+		end
 	end
+
+	return worldPos
 end
 
--- Create visual projectile that travels and checks for hits
-local function createTravelingProjectile(startPos, direction)
+-- Red click debug line
+local function spawnDebugLine(position)
+	local part = Instance.new("Part")
+	part.Anchored = true
+	part.CanCollide = false
+	part.Size = Vector3.new(2, 0.1, 0.2)
+	part.Position = Vector3.new(position.X, 0.05, position.Z)
+	part.Color = Color3.fromRGB(255, 0, 0)
+	part.Material = Enum.Material.Neon
+	part.Name = "ClickLine"
+	part.Parent = workspace
+
+	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local root = player.Character.HumanoidRootPart
+		local from = Vector3.new(root.Position.X, 0, root.Position.Z)
+		local to = Vector3.new(position.X, 0, position.Z)
+		local dir = (to - from).Unit
+		part.CFrame = CFrame.new(from:Lerp(to, 0.5), from + dir) * CFrame.Angles(0, math.pi / 2, 0)
+	end
+
+	Debris:AddItem(part, 2)
+end
+
+-- Green glowing ring
+local function createAimIndicator()
+	if aimIndicator then return end
+
+	aimIndicator = Instance.new("Part")
+	aimIndicator.Anchored = true
+	aimIndicator.CanCollide = false
+	aimIndicator.Shape = Enum.PartType.Cylinder
+	aimIndicator.Size = Vector3.new(4, 0.1, 4)
+	aimIndicator.Color = Color3.fromRGB(0, 255, 0)
+	aimIndicator.Material = Enum.Material.Neon
+	aimIndicator.Name = "AimRing"
+	aimIndicator.Parent = workspace
+
+	local light = Instance.new("PointLight")
+	light.Color = aimIndicator.Color
+	light.Brightness = 2
+	light.Range = 6
+	light.Parent = aimIndicator
+end
+
+local function updateAimIndicator(position)
+	if not aimIndicator then createAimIndicator() end
+	local pos = Vector3.new(position.X, 0.05, position.Z)
+	aimIndicator.Position = pos
+	aimIndicator.CFrame = CFrame.new(pos) * CFrame.Angles(math.rad(90), 0, 0)
+end
+
+-- Green laser line from player to cursor
+local function updateAimLine(from, to)
+	if not aimLine then
+		aimLine = Instance.new("Part")
+		aimLine.Anchored = true
+		aimLine.CanCollide = false
+		aimLine.Material = Enum.Material.Neon
+		aimLine.Color = Color3.fromRGB(0, 255, 0)
+		aimLine.Size = Vector3.new(0.15, 0.15, 1)
+		aimLine.Name = "AimLine"
+		aimLine.Parent = workspace
+	end
+
+	local distance = (to - from).Magnitude
+	local midpoint = (from + to) / 2
+	aimLine.Size = Vector3.new(0.15, 0.15, distance)
+	aimLine.CFrame = CFrame.new(midpoint, to)
+end
+
+-- ========================================================================
+-- PROJECTILE
+-- ========================================================================
+
+local function createTravelingProjectile(startPos, initialDirection, targetPos)
 	local projectile = Instance.new("Part")
-	projectile.Name = "VisualProjectile"
+	projectile.Anchored = true
+	projectile.CanCollide = false
+	projectile.Shape = Enum.PartType.Ball
 	projectile.Size = CONFIG.projectileSize
 	projectile.Color = CONFIG.projectileColor
 	projectile.Material = Enum.Material.Neon
-	projectile.Shape = Enum.PartType.Ball
-	projectile.CanCollide = false
-	projectile.Anchored = true
 	projectile.Position = startPos
+	projectile.Name = "LaserProjectile"
 	projectile.Parent = workspace
 
-	-- Add glow
+	-- Enhanced glow effect for prettier visuals
 	local light = Instance.new("PointLight")
 	light.Color = CONFIG.projectileColor
-	light.Brightness = 2
-	light.Range = 10
+	light.Brightness = 3
+	light.Range = 12
 	light.Parent = projectile
 
-	-- Track movement
+	-- Add trailing effect
+	local trail = Instance.new("Trail")
+	local attachment1 = Instance.new("Attachment")
+	local attachment2 = Instance.new("Attachment")
+	attachment1.Position = Vector3.new(0, 0, 0.5)
+	attachment2.Position = Vector3.new(0, 0, -0.5)
+	attachment1.Parent = projectile
+	attachment2.Parent = projectile
+	trail.Attachment0 = attachment1
+	trail.Attachment1 = attachment2
+	trail.Color = ColorSequence.new(CONFIG.projectileColor)
+	trail.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.5),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	trail.Lifetime = 0.3
+	trail.MinLength = 0
+	trail.Parent = projectile
+
+	-- Ballistic trajectory calculation
 	local startTime = tick()
 	local lastPosition = startPos
 	local hasHit = false
 
+	-- Calculate initial velocity for ballistic trajectory
+	local horizontalDistance = ((Vector3.new(targetPos.X, 0, targetPos.Z) - Vector3.new(startPos.X, 0, startPos.Z)).Magnitude)
+	local heightDifference = targetPos.Y - startPos.Y
+	local timeToTarget = horizontalDistance / CONFIG.speed
+
+	-- Initial velocity with arc to reach target
+	local initialVelocity = Vector3.new(
+		(targetPos.X - startPos.X) / timeToTarget,
+		(heightDifference / timeToTarget) + (CONFIG.gravityStrength * timeToTarget * 0.5),
+		(targetPos.Z - startPos.Z) / timeToTarget
+	)
+
 	local connection
 	connection = RunService.Heartbeat:Connect(function()
 		local elapsed = tick() - startTime
-		if elapsed > 2 then -- 2 second lifetime
+
+		-- Max lifetime based on time to target + buffer
+		if elapsed > timeToTarget + 1 then
 			connection:Disconnect()
-			if projectile.Parent then
-				projectile:Destroy()
-			end
+			if projectile.Parent then projectile:Destroy() end
 			return
 		end
 
-		-- Calculate new position
-		local newPos = startPos + direction * CONFIG.speed * elapsed
+		-- Ballistic motion with gravity
+		local currentVelocity = Vector3.new(
+			initialVelocity.X,
+			initialVelocity.Y - CONFIG.gravityStrength * elapsed,  -- Apply gravity
+			initialVelocity.Z
+		)
 
-		-- Check for hits between last position and new position
+		local newPos = startPos + Vector3.new(
+			initialVelocity.X * elapsed,
+			initialVelocity.Y * elapsed - 0.5 * CONFIG.gravityStrength * elapsed * elapsed,  -- Ballistic Y
+			initialVelocity.Z * elapsed
+		)
+
+		-- Check if projectile hit the ground or target
+		if newPos.Y <= targetPos.Y + 0.1 and not hasHit then
+			hasHit = true
+
+			-- Hit effect at target position
+			local explosion = Instance.new("Explosion")
+			explosion.Position = targetPos
+			explosion.BlastRadius = 3
+			explosion.BlastPressure = 0
+			explosion.Parent = workspace
+
+			-- Send hit to server
+			shootRemote:FireServer(nil, targetPos, CONFIG.damage, initialDirection)
+
+			-- Clean up projectile
+			connection:Disconnect()
+			if projectile.Parent then projectile:Destroy() end
+			return
+		end
+
+		-- Collision detection during flight
 		if not hasHit then
-			local raycastParams = RaycastParams.new()
-			raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-			raycastParams.FilterDescendantsInstances = {player.Character, projectile}
-
 			local rayDirection = newPos - lastPosition
-			local raycastResult = workspace:Raycast(lastPosition, rayDirection, raycastParams)
+			local rayParams = RaycastParams.new()
+			rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+			rayParams.FilterDescendantsInstances = {
+				player.Character,
+				projectile,
+				workspace:FindFirstChild("Baseplate")
+			}
 
-			if raycastResult then
-				local hitPart = raycastResult.Instance
-				local hitPosition = raycastResult.Position
+			local result = workspace:Raycast(lastPosition, rayDirection, rayParams)
+			if result and result.Instance then
+				local hitPart = result.Instance
+				if hitPart:IsA("BasePart") and hitPart.Name ~= "Baseplate" then
+					local hitPosition = result.Position
 
-				-- Check if we hit an enemy
-				if hitPart and hitPart.Parent then
-					local humanoid = hitPart.Parent:FindFirstChild("Humanoid")
+					-- Fire hit event to server
+					shootRemote:FireServer(hitPart, hitPosition, CONFIG.damage, currentVelocity.Unit)
 
-					if humanoid and (
-						CollectionService:HasTag(hitPart.Parent, "RoomEnemy") or
-							string.find(string.lower(hitPart.Parent.Name or ""), "enemy") or
-							string.find(string.lower(hitPart.Parent.Name or ""), "fly") or
-							string.find(string.lower(hitPart.Parent.Name or ""), "spider") or
-							string.find(string.lower(hitPart.Parent.Name or ""), "gaper")
-						) then
-						hasHit = true
-						print("🎯 Projectile hit enemy:", hitPart.Parent.Name)
+					-- Visual effect
+					local explosion = Instance.new("Explosion")
+					explosion.Position = hitPosition
+					explosion.BlastRadius = 3
+					explosion.BlastPressure = 0
+					explosion.Parent = workspace
 
-						-- Send hit to server
-						shootRemote:FireServer(humanoid, CONFIG.damage, hitPosition)
-
-						-- Move projectile to hit position and create effect
-						projectile.Position = hitPosition
-
-						-- Create hit effect
-						local effect = Instance.new("Explosion")
-						effect.Position = hitPosition
-						effect.BlastRadius = 3
-						effect.BlastPressure = 0
-						effect.Parent = workspace
-
-						-- Destroy projectile after brief delay so you can see the hit
-						task.wait(0.1)
-						connection:Disconnect()
-						if projectile.Parent then
-							projectile:Destroy()
-						end
-						return
-					end
+					hasHit = true
+					connection:Disconnect()
+					if projectile.Parent then projectile:Destroy() end
+					return
 				end
-
-				-- Hit something else (wall, obstacle, etc.)
-				hasHit = true
-				projectile.Position = hitPosition
-
-				-- Small effect for hitting walls
-				local effect = Instance.new("Explosion")
-				effect.Position = hitPosition
-				effect.BlastRadius = 1
-				effect.BlastPressure = 0
-				effect.Parent = workspace
-
-				task.wait(0.1)
-				connection:Disconnect()
-				if projectile.Parent then
-					projectile:Destroy()
-				end
-				return
 			end
 		end
 
-		-- Update position and track last position
+		-- Update projectile position
 		projectile.Position = newPos
 		lastPosition = newPos
 	end)
-
-	return projectile
 end
 
--- Main shoot function
+-- ========================================================================
+-- SHOOT FUNCTION (FIXED FOR Y=2 SHOOTING)
+-- ========================================================================
+
 local function shoot()
 	local currentTime = tick()
-	if currentTime - lastShotTime < CONFIG.fireRate then
-		return
-	end
+	if currentTime - lastShotTime < CONFIG.fireRate then return end
 
-	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
-		return
-	end
+	local character = player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
 
-	local humanoidRootPart = player.Character.HumanoidRootPart
-	local startPos = humanoidRootPart.Position + Vector3.new(0, 1, 0) + aimDirection * 2
+	local root = character.HumanoidRootPart
+	local groundTarget = getMouseWorldGroundPosition()
+	if not groundTarget then return end
 
-	-- Create traveling projectile that will check for hits as it moves
-	local visualProjectile = createTravelingProjectile(startPos, aimDirection)
+	-- Shooting position at Y=2
+	local shootingPos = root.Position + Vector3.new(0, CONFIG.shootingHeight, 0)
+
+	-- Target position on ground (Y=0)
+	local targetPos = Vector3.new(groundTarget.X, 0, groundTarget.Z)
+
+	-- Calculate initial direction (for server communication)
+	local initialDirection = (targetPos - shootingPos).Unit
+
+	-- Visuals (still show ground targeting)
+	updateAimIndicator(groundTarget)
+	updateAimLine(Vector3.new(root.Position.X, 0.05, root.Position.Z), Vector3.new(groundTarget.X, 0.05, groundTarget.Z))
+	spawnDebugLine(groundTarget)
+
+	-- Create projectile with ballistic trajectory
+	createTravelingProjectile(shootingPos, initialDirection, targetPos)
 
 	lastShotTime = currentTime
-	print("💙 Shot projectile in direction:", aimDirection)
+
+	print("🎯 Ballistic shot from Y=" .. CONFIG.shootingHeight .. " to range:", 
+		math.floor(((targetPos - Vector3.new(root.Position.X, 0, root.Position.Z)).Magnitude)), "studs")
 end
 
--- Input handling
+-- ========================================================================
+-- INPUT + AIM UPDATE
+-- ========================================================================
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
-
-	-- Track WASD for aiming
-	if input.KeyCode == Enum.KeyCode.W then
-		inputState.up = true
-		updateAimDirection()
-	elseif input.KeyCode == Enum.KeyCode.S then
-		inputState.down = true
-		updateAimDirection()
-	elseif input.KeyCode == Enum.KeyCode.A then
-		inputState.left = true
-		updateAimDirection()
-	elseif input.KeyCode == Enum.KeyCode.D then
-		inputState.right = true
-		updateAimDirection()
-	end
-
-	-- Shoot with left click
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		shoot()
 	end
 end)
 
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-
-	-- Release WASD
-	if input.KeyCode == Enum.KeyCode.W then
-		inputState.up = false
-		updateAimDirection()
-	elseif input.KeyCode == Enum.KeyCode.S then
-		inputState.down = false
-		updateAimDirection()
-	elseif input.KeyCode == Enum.KeyCode.A then
-		inputState.left = false
-		updateAimDirection()
-	elseif input.KeyCode == Enum.KeyCode.D then
-		inputState.right = false
-		updateAimDirection()
+-- Update aim ring and line each frame
+RunService.Heartbeat:Connect(function()
+	local target = getMouseWorldGroundPosition()
+	if target and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local root = player.Character.HumanoidRootPart
+		local from = Vector3.new(root.Position.X, 0.05, root.Position.Z)
+		local to = Vector3.new(target.X, 0.05, target.Z)
+		updateAimIndicator(to)
+		updateAimLine(from, to)
 	end
 end)
 
-print("🎯 Fixed Isaac Shooting System loaded!")
-print("🎮 WASD to aim, Left Click to shoot")
-print("📡 Using RemoteEvents for server damage")
+print("✅ Enhanced Isometric Attack Script Loaded")
+print("🎯 Max Range: " .. CONFIG.maxRange .. " studs from character")
+print("🌌 Ballistic trajectory with bullet drop enabled")
+print("✨ Enhanced visuals: trails, better lighting, and arc motion")
