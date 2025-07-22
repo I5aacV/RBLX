@@ -1,0 +1,273 @@
+-- ========================================================================
+-- SIMPLE SHOP CLIENT UI
+-- Place this in StarterPlayerScripts
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Wait for remotes
+local shopRemotes = ReplicatedStorage:WaitForChild("ShopRemotes")
+local openShopRemote = shopRemotes:WaitForChild("OpenShop")
+local buyItemRemote = shopRemotes:WaitForChild("BuyItem")
+
+-- ========================================================================
+-- UI CREATION
+-- ========================================================================
+
+local function CreateShopUI()
+	-- Main shop GUI
+	local shopGui = Instance.new("ScreenGui")
+	shopGui.Name = "ShopGui"
+	shopGui.Enabled = false
+	shopGui.Parent = playerGui
+
+	-- Background frame
+	local background = Instance.new("Frame")
+	background.Name = "Background"
+	background.Size = UDim2.new(0, 600, 0, 400)
+	background.Position = UDim2.new(0.5, -300, 0.5, -200)
+	background.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+	background.BorderSizePixel = 2
+	background.BorderColor3 = Color3.new(0.8, 0.6, 0.2)
+	background.Parent = shopGui
+
+	-- Title
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(1, 0, 0, 50)
+	title.Position = UDim2.new(0, 0, 0, 0)
+	title.BackgroundColor3 = Color3.new(0.8, 0.6, 0.2)
+	title.BorderSizePixel = 0
+	title.Text = "🏪 SHOP"
+	title.TextScaled = true
+	title.Font = Enum.Font.SourceSansBold
+	title.TextColor3 = Color3.new(0, 0, 0)
+	title.Parent = background
+
+	-- Close button
+	local closeButton = Instance.new("TextButton")
+	closeButton.Name = "CloseButton"
+	closeButton.Size = UDim2.new(0, 40, 0, 40)
+	closeButton.Position = UDim2.new(1, -45, 0, 5)
+	closeButton.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+	closeButton.BorderSizePixel = 0
+	closeButton.Text = "✕"
+	closeButton.TextScaled = true
+	closeButton.Font = Enum.Font.SourceSansBold
+	closeButton.TextColor3 = Color3.new(1, 1, 1)
+	closeButton.Parent = background
+
+	-- Items container
+	local itemsFrame = Instance.new("ScrollingFrame")
+	itemsFrame.Name = "ItemsFrame"
+	itemsFrame.Size = UDim2.new(1, -20, 1, -70)
+	itemsFrame.Position = UDim2.new(0, 10, 0, 60)
+	itemsFrame.BackgroundTransparency = 1
+	itemsFrame.BorderSizePixel = 0
+	itemsFrame.ScrollBarThickness = 8
+	itemsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+	itemsFrame.Parent = background
+
+	-- Close button functionality
+	closeButton.MouseButton1Click:Connect(function()
+		CloseShop()
+	end)
+
+	return shopGui
+end
+
+-- ========================================================================
+-- SHOP FUNCTIONS
+-- ========================================================================
+
+local shopGui = CreateShopUI()
+local currentShopData = {}
+
+local function GetRarityColor(rarity)
+	local colors = {
+		COMMON = Color3.new(0.7, 0.7, 0.7),
+		UNCOMMON = Color3.new(0.2, 0.8, 0.2),
+		RARE = Color3.new(0.2, 0.5, 1),
+		LEGENDARY = Color3.new(0.8, 0.4, 1),
+		BLESSED = Color3.new(1, 0.8, 0.2),
+		CURSED = Color3.new(0.8, 0.2, 0.2)
+	}
+	return colors[rarity] or colors.COMMON
+end
+
+local function CreateItemFrame(itemData, index)
+	local itemFrame = Instance.new("Frame")
+	itemFrame.Name = "Item" .. index
+	itemFrame.Size = UDim2.new(1, -10, 0, 80)
+	itemFrame.Position = UDim2.new(0, 5, 0, (index - 1) * 90)
+	itemFrame.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
+	itemFrame.BorderSizePixel = 1
+	itemFrame.BorderColor3 = GetRarityColor(itemData.rarity)
+
+	-- Special styling for unique items
+	if itemData.isUnique then
+		itemFrame.BorderSizePixel = 2
+		-- Add a golden glow effect
+		local glow = Instance.new("Frame")
+		glow.Name = "UniqueGlow"
+		glow.Size = UDim2.new(1, 4, 1, 4)
+		glow.Position = UDim2.new(0, -2, 0, -2)
+		glow.BackgroundColor3 = Color3.new(1, 0.8, 0.2)
+		glow.BackgroundTransparency = 0.7
+		glow.BorderSizePixel = 0
+		glow.ZIndex = itemFrame.ZIndex - 1
+		glow.Parent = itemFrame
+	end
+
+	-- Item name with unique indicator
+	local itemName = Instance.new("TextLabel")
+	itemName.Name = "ItemName"
+	itemName.Size = UDim2.new(0.6, 0, 0.5, 0)
+	itemName.Position = UDim2.new(0, 10, 0, 5)
+	itemName.BackgroundTransparency = 1
+	itemName.Text = (itemData.isUnique and "⭐ " or "") .. itemData.name
+	itemName.TextScaled = true
+	itemName.Font = Enum.Font.SourceSansBold
+	itemName.TextColor3 = GetRarityColor(itemData.rarity)
+	itemName.TextXAlignment = Enum.TextXAlignment.Left
+	itemName.Parent = itemFrame
+
+	-- Item rarity with unique label
+	local itemRarity = Instance.new("TextLabel")
+	itemRarity.Name = "ItemRarity"
+	itemRarity.Size = UDim2.new(0.6, 0, 0.3, 0)
+	itemRarity.Position = UDim2.new(0, 10, 0.5, 0)
+	itemRarity.BackgroundTransparency = 1
+	itemRarity.Text = itemData.rarity .. (itemData.isUnique and " • UNIQUE" or "")
+	itemRarity.TextScaled = true
+	itemRarity.Font = Enum.Font.SourceSans
+	itemRarity.TextColor3 = itemData.isUnique and Color3.new(1, 0.8, 0.2) or Color3.new(0.8, 0.8, 0.8)
+	itemRarity.TextXAlignment = Enum.TextXAlignment.Left
+	itemRarity.Parent = itemFrame
+
+	-- Price label with discount indicator
+	local priceText = "💰 " .. itemData.price
+	if itemData.isUnique then
+		priceText = priceText .. " (20% OFF!)"
+	end
+
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Name = "PriceLabel"
+	priceLabel.Size = UDim2.new(0.25, 0, 0.4, 0)
+	priceLabel.Position = UDim2.new(0.65, 0, 0, 5)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = priceText
+	priceLabel.TextScaled = true
+	priceLabel.Font = Enum.Font.SourceSansBold
+	priceLabel.TextColor3 = Color3.new(1, 0.8, 0.2)
+	priceLabel.Parent = itemFrame
+
+	-- Buy button
+	local buyButton = Instance.new("TextButton")
+	buyButton.Name = "BuyButton"
+	buyButton.Size = UDim2.new(0.25, 0, 0.4, 0)
+	buyButton.Position = UDim2.new(0.65, 0, 0.5, 0)
+	buyButton.BackgroundColor3 = itemData.isUnique and Color3.new(1, 0.8, 0.2) or Color3.new(0.2, 0.8, 0.2)
+	buyButton.BorderSizePixel = 0
+	buyButton.Text = "BUY"
+	buyButton.TextScaled = true
+	buyButton.Font = Enum.Font.SourceSansBold
+	buyButton.TextColor3 = Color3.new(1, 1, 1)
+	buyButton.Parent = itemFrame
+
+	-- Handle sold items
+	if itemData.sold then
+		buyButton.Text = "SOLD"
+		buyButton.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
+		buyButton.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+		itemFrame.BackgroundTransparency = 0.5
+		itemName.TextTransparency = 0.5
+		itemRarity.TextTransparency = 0.5
+		priceLabel.TextTransparency = 0.5
+		if itemFrame:FindFirstChild("UniqueGlow") then
+			itemFrame.UniqueGlow.BackgroundTransparency = 0.9
+		end
+	else
+		-- Buy button functionality
+		buyButton.MouseButton1Click:Connect(function()
+			buyItemRemote:FireServer(index)
+			buyButton.Text = "..."
+			buyButton.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
+		end)
+	end
+
+	return itemFrame
+end
+
+local function UpdateShopUI(shopData)
+	local itemsFrame = shopGui.Background.ItemsFrame
+
+	-- Clear existing items
+	for _, child in pairs(itemsFrame:GetChildren()) do
+		child:Destroy()
+	end
+
+	currentShopData = shopData
+
+	-- Create item frames
+	for i, itemData in pairs(shopData) do
+		local itemFrame = CreateItemFrame(itemData, i)
+		itemFrame.Parent = itemsFrame
+	end
+
+	-- Update canvas size
+	itemsFrame.CanvasSize = UDim2.new(0, 0, 0, #shopData * 90)
+end
+
+function OpenShop(shopData)
+	UpdateShopUI(shopData)
+	shopGui.Enabled = true
+
+	-- Animate opening
+	local background = shopGui.Background
+	background.Size = UDim2.new(0, 0, 0, 0)
+	background.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+	local tween = TweenService:Create(
+		background,
+		TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{
+			Size = UDim2.new(0, 600, 0, 400),
+			Position = UDim2.new(0.5, -300, 0.5, -200)
+		}
+	)
+	tween:Play()
+end
+
+function CloseShop()
+	local background = shopGui.Background
+
+	local tween = TweenService:Create(
+		background,
+		TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+		{
+			Size = UDim2.new(0, 0, 0, 0),
+			Position = UDim2.new(0.5, 0, 0.5, 0)
+		}
+	)
+
+	tween:Play()
+	tween.Completed:Connect(function()
+		shopGui.Enabled = false
+	end)
+end
+
+-- ========================================================================
+-- REMOTE EVENTS
+-- ========================================================================
+
+openShopRemote.OnClientEvent:Connect(function(shopData)
+	OpenShop(shopData)
+end)
+
+print("🛒 Shop Client UI loaded!")
