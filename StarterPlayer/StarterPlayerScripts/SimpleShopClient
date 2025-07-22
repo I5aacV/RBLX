@@ -1,0 +1,396 @@
+-- ========================================================================
+-- SIMPLE SHOP CLIENT (PROXIMITY PROMPT VERSION)
+-- Place this in StarterPlayer > StarterPlayerScripts
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+
+-- ========================================================================
+-- VARIABLES
+-- ========================================================================
+
+local shopRemotes
+local openShopRemote
+local buyItemRemote
+local updateShopRemote -- NEW: For updating without closing
+
+-- UI Elements
+local shopGui
+local currentShopData = {} -- Track current shop state
+
+-- ========================================================================
+-- REMOTE CONNECTION
+-- ========================================================================
+
+local function connectToRemotes()
+	-- Wait for shop remotes
+	shopRemotes = ReplicatedStorage:WaitForChild("ShopRemotes", 10)
+	if not shopRemotes then
+		warn("❌ Shop remotes not found!")
+		return false
+	end
+
+	openShopRemote = shopRemotes:WaitForChild("OpenShop", 5)
+	buyItemRemote = shopRemotes:WaitForChild("BuyItem", 5)
+	updateShopRemote = shopRemotes:WaitForChild("UpdateShop", 5) -- NEW
+
+	if not openShopRemote or not buyItemRemote or not updateShopRemote then
+		warn("❌ Some shop remotes missing!")
+		return false
+	end
+
+	print("✅ Connected to shop remotes")
+	return true
+end
+
+-- ========================================================================
+-- UI CREATION
+-- ========================================================================
+
+local function createShopUI()
+	-- Main shop GUI
+	shopGui = Instance.new("ScreenGui")
+	shopGui.Name = "ShopGui"
+	shopGui.ResetOnSpawn = false
+	shopGui.Enabled = false
+	shopGui.Parent = player:WaitForChild("PlayerGui")
+end
+
+local function getRarityColor(rarity)
+	local colors = {
+		COMMON = Color3.new(0.7, 0.7, 0.7),
+		UNCOMMON = Color3.new(0.2, 0.8, 0.2),
+		RARE = Color3.new(0.2, 0.5, 1),
+		LEGENDARY = Color3.new(0.8, 0.4, 1),
+		BLESSED = Color3.new(1, 0.8, 0.2),
+		CURSED = Color3.new(0.8, 0.2, 0.2)
+	}
+	return colors[rarity] or colors.COMMON
+end
+
+-- ========================================================================
+-- SHOP UI HANDLING
+-- ========================================================================
+
+-- NEW: Update existing shop items without recreating UI
+local function updateShopItems(shopData)
+	print("🔄 Updating shop items without closing UI")
+	currentShopData = shopData
+
+	if not shopGui.Enabled then
+		return -- Shop is not open, no need to update
+	end
+
+	local background = shopGui:FindFirstChild("Background")
+	if not background then
+		return -- No UI to update
+	end
+
+	local itemsList = background:FindFirstChild("ItemsList")
+	if not itemsList then
+		return
+	end
+
+	-- Update existing item frames instead of recreating them
+	local itemFrames = itemsList:GetChildren()
+	for i, itemFrame in pairs(itemFrames) do
+		if itemFrame:IsA("Frame") and itemFrame.Name:find("Item") then
+			local itemIndex = tonumber(itemFrame.Name:match("%d+"))
+			if itemIndex and shopData[itemIndex] then
+				local itemData = shopData[itemIndex]
+				local buyButton = itemFrame:FindFirstChild("BuyButton")
+
+				if buyButton and itemData.sold then
+					-- Update to sold state
+					buyButton.Text = "SOLD"
+					buyButton.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
+					buyButton.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+					buyButton.Active = false
+					itemFrame.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
+					itemFrame.BackgroundTransparency = 0.5
+
+					-- Gray out text elements
+					for _, child in pairs(itemFrame:GetChildren()) do
+						if child:IsA("TextLabel") then
+							child.TextTransparency = 0.5
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+local function createItemFrame(itemData, index, itemsList)
+	local itemFrame = Instance.new("Frame")
+	itemFrame.Name = "Item" .. index -- Add index to name for updates
+	itemFrame.Size = UDim2.new(1, -10, 0, 80)
+	itemFrame.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
+	itemFrame.BorderSizePixel = 1
+	itemFrame.BorderColor3 = getRarityColor(itemData.rarity)
+	itemFrame.Parent = itemsList
+
+	-- Corner rounding
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = itemFrame
+
+	-- Special styling for unique items
+	if itemData.isUnique then
+		itemFrame.BorderSizePixel = 2
+		-- Add a golden glow effect
+		local glow = Instance.new("Frame")
+		glow.Size = UDim2.new(1, 4, 1, 4)
+		glow.Position = UDim2.new(0, -2, 0, -2)
+		glow.BackgroundColor3 = Color3.new(1, 0.8, 0.2)
+		glow.BackgroundTransparency = 0.7
+		glow.BorderSizePixel = 0
+		glow.ZIndex = itemFrame.ZIndex - 1
+		glow.Parent = itemFrame
+
+		local glowCorner = Instance.new("UICorner")
+		glowCorner.CornerRadius = UDim.new(0, 10)
+		glowCorner.Parent = glow
+	end
+
+	-- Item name with unique indicator
+	local itemName = Instance.new("TextLabel")
+	itemName.Size = UDim2.new(0.6, 0, 0.5, 0)
+	itemName.Position = UDim2.new(0, 10, 0, 5)
+	itemName.BackgroundTransparency = 1
+	itemName.Text = (itemData.isUnique and "⭐ " or "") .. itemData.name
+	itemName.TextScaled = true
+	itemName.Font = Enum.Font.SourceSansBold
+	itemName.TextColor3 = getRarityColor(itemData.rarity)
+	itemName.TextXAlignment = Enum.TextXAlignment.Left
+	itemName.Parent = itemFrame
+
+	-- Item rarity with unique label
+	local itemRarity = Instance.new("TextLabel")
+	itemRarity.Size = UDim2.new(0.6, 0, 0.3, 0)
+	itemRarity.Position = UDim2.new(0, 10, 0.5, 0)
+	itemRarity.BackgroundTransparency = 1
+	itemRarity.Text = itemData.rarity .. (itemData.isUnique and " • UNIQUE" or "")
+	itemRarity.TextScaled = true
+	itemRarity.Font = Enum.Font.SourceSans
+	itemRarity.TextColor3 = itemData.isUnique and Color3.new(1, 0.8, 0.2) or Color3.new(0.8, 0.8, 0.8)
+	itemRarity.TextXAlignment = Enum.TextXAlignment.Left
+	itemRarity.Parent = itemFrame
+
+	-- Price label with discount indicator
+	local priceText = "💰 " .. itemData.price
+	if itemData.isUnique then
+		priceText = priceText .. " (20% OFF!)"
+	end
+
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Size = UDim2.new(0.25, 0, 0.4, 0)
+	priceLabel.Position = UDim2.new(0.65, 0, 0, 5)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = priceText
+	priceLabel.TextScaled = true
+	priceLabel.Font = Enum.Font.SourceSansBold
+	priceLabel.TextColor3 = Color3.new(1, 0.8, 0.2)
+	priceLabel.Parent = itemFrame
+
+	-- Buy button
+	local buyButton = Instance.new("TextButton")
+	buyButton.Name = "BuyButton" -- Add name for easier finding
+	buyButton.Size = UDim2.new(0.25, 0, 0.4, 0)
+	buyButton.Position = UDim2.new(0.65, 0, 0.5, 0)
+	buyButton.BackgroundColor3 = itemData.isUnique and Color3.new(1, 0.8, 0.2) or Color3.new(0.2, 0.8, 0.2)
+	buyButton.BorderSizePixel = 0
+	buyButton.Text = "BUY"
+	buyButton.TextScaled = true
+	buyButton.Font = Enum.Font.SourceSansBold
+	buyButton.TextColor3 = Color3.new(1, 1, 1)
+	buyButton.Parent = itemFrame
+
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 6)
+	buttonCorner.Parent = buyButton
+
+	-- Handle sold items
+	if itemData.sold then
+		buyButton.Text = "SOLD"
+		buyButton.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
+		buyButton.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+		buyButton.Active = false -- Disable the button
+		itemFrame.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
+		itemFrame.BackgroundTransparency = 0.5
+		itemName.TextTransparency = 0.5
+		itemRarity.TextTransparency = 0.5
+		priceLabel.TextTransparency = 0.5
+		if itemFrame:FindFirstChild("Frame") then -- glow frame
+			itemFrame.Frame.BackgroundTransparency = 0.9
+		end
+	else
+		-- Simple buy button functionality
+		buyButton.MouseButton1Click:Connect(function()
+			buyItemRemote:FireServer(index)
+			buyButton.Text = "..."
+			buyButton.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
+			buyButton.Active = false -- Disable after clicking
+		end)
+	end
+
+	return itemFrame
+end
+
+local function handleShopOpen(shopData)
+	print("🛒 Opening shop with", #shopData, "items")
+	currentShopData = shopData -- Store current data
+
+	-- Clear existing shop UI
+	for _, child in pairs(shopGui:GetChildren()) do
+		child:Destroy()
+	end
+
+	-- Background frame
+	local background = Instance.new("Frame")
+	background.Name = "Background"
+	background.Size = UDim2.new(0, 600, 0, 400)
+	background.Position = UDim2.new(0.5, -300, 0.5, -200)
+	background.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+	background.BorderSizePixel = 2
+	background.BorderColor3 = Color3.new(0.8, 0.6, 0.2)
+	background.Parent = shopGui
+
+	local backgroundCorner = Instance.new("UICorner")
+	backgroundCorner.CornerRadius = UDim.new(0, 12)
+	backgroundCorner.Parent = background
+
+	-- Title
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 50)
+	title.BackgroundColor3 = Color3.new(0.8, 0.6, 0.2)
+	title.BorderSizePixel = 0
+	title.Text = "🏪 SHOP"
+	title.TextScaled = true
+	title.Font = Enum.Font.SourceSansBold
+	title.TextColor3 = Color3.new(0, 0, 0)
+	title.Parent = background
+
+	local titleCorner = Instance.new("UICorner")
+	titleCorner.CornerRadius = UDim.new(0, 12)
+	titleCorner.Parent = title
+
+	-- Close button
+	local closeButton = Instance.new("TextButton")
+	closeButton.Size = UDim2.new(0, 40, 0, 40)
+	closeButton.Position = UDim2.new(1, -45, 0, 5)
+	closeButton.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+	closeButton.BorderSizePixel = 0
+	closeButton.Text = "✕"
+	closeButton.TextScaled = true
+	closeButton.Font = Enum.Font.SourceSansBold
+	closeButton.TextColor3 = Color3.new(1, 1, 1)
+	closeButton.Parent = background
+
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(0, 8)
+	closeCorner.Parent = closeButton
+
+	-- Items container
+	local itemsList = Instance.new("ScrollingFrame")
+	itemsList.Name = "ItemsList" -- Add name for easier finding
+	itemsList.Size = UDim2.new(1, -20, 1, -70)
+	itemsList.Position = UDim2.new(0, 10, 0, 60)
+	itemsList.BackgroundTransparency = 1
+	itemsList.BorderSizePixel = 0
+	itemsList.ScrollBarThickness = 8
+	itemsList.CanvasSize = UDim2.new(0, 0, 0, 0)
+	itemsList.Parent = background
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Padding = UDim.new(0, 10)
+	listLayout.Parent = itemsList
+
+	-- Close button functionality
+	closeButton.MouseButton1Click:Connect(function()
+		local tween = TweenService:Create(
+			background,
+			TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+			{
+				Size = UDim2.new(0, 0, 0, 0),
+				Position = UDim2.new(0.5, 0, 0.5, 0)
+			}
+		)
+		tween:Play()
+		tween.Completed:Connect(function()
+			shopGui.Enabled = false
+		end)
+	end)
+
+	-- Create item frames
+	for i, itemData in pairs(shopData) do
+		createItemFrame(itemData, i, itemsList)
+	end
+
+	-- Update canvas size
+	itemsList.CanvasSize = UDim2.new(0, 0, 0, #shopData * 90)
+
+	-- Show and animate opening
+	shopGui.Enabled = true
+	background.Size = UDim2.new(0, 0, 0, 0)
+	background.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+	local tween = TweenService:Create(
+		background,
+		TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{
+			Size = UDim2.new(0, 600, 0, 400),
+			Position = UDim2.new(0.5, -300, 0.5, -200)
+		}
+	)
+	tween:Play()
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+local function initialize()
+	print("🏪 Initializing shop client...")
+
+	if not connectToRemotes() then
+		warn("❌ Failed to connect to shop remotes")
+		return
+	end
+
+	createShopUI()
+
+	-- Connect shop data handlers
+	openShopRemote.OnClientEvent:Connect(handleShopOpen)
+	updateShopRemote.OnClientEvent:Connect(updateShopItems) -- NEW: Handle updates
+
+	print("✅ Shop client initialized!")
+end
+
+-- Wait for player character and start
+player.CharacterAdded:Connect(function()
+	task.wait(2) -- Wait for server to be ready
+	initialize()
+end)
+
+if player.Character then
+	task.wait(2)
+	initialize()
+end
+
+print("🏪 Simple Shop Client Script loaded! (ProximityPrompt Version)")
+print("📋 Features:")
+print("  ✅ Built-in Roblox ProximityPrompt interaction")
+print("  ✅ Automatic 'Open Shop' prompt when near counter")
+print("  ✅ Smooth animated shop UI")
+print("  ✅ Visual rarity colors and unique item highlighting")
+print("  ✅ Clean modern design with rounded corners")
+print("💡 Usage:")
+print("  - Walk near shop counter")
+print("  - Press E when 'Open Shop' prompt appears")
+print("  - Browse items and click BUY buttons")
