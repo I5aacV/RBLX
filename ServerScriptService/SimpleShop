@@ -1,0 +1,460 @@
+-- ========================================================================
+-- SIMPLE SHOP SYSTEM
+-- Place this in ServerScriptService
+-- ========================================================================
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- ========================================================================
+-- CONFIGURATION
+-- ========================================================================
+
+local SHOP_CONFIG = {
+	SHARED_ITEMS = 3, -- Shared items for all players
+	UNIQUE_ITEMS = 1, -- Unique items per player
+	BASE_PRICES = {
+		COMMON = 10,
+		UNCOMMON = 20,
+		RARE = 35,
+		LEGENDARY = 50,
+		BLESSED = 75,
+		CURSED = 15
+	}
+}
+
+-- ========================================================================
+-- SHOP SYSTEM
+-- ========================================================================
+
+local ShopSystem = {}
+local currentShopItems = {} -- Shared across all players
+local playerUniqueItems = {} -- Unique items per player
+local shopStands = {}
+
+-- Setup remote events
+local shopRemotes = Instance.new("Folder")
+shopRemotes.Name = "ShopRemotes"
+shopRemotes.Parent = ReplicatedStorage
+
+local openShopRemote = Instance.new("RemoteEvent")
+openShopRemote.Name = "OpenShop"
+openShopRemote.Parent = shopRemotes
+
+local buyItemRemote = Instance.new("RemoteEvent")
+buyItemRemote.Name = "BuyItem"
+buyItemRemote.Parent = shopRemotes
+
+function ShopSystem:Initialize()
+	print("🏪 Simple Shop System starting...")
+
+	-- Wait for required systems before generating items
+	spawn(function()
+		self:WaitForItemSystems()
+		self:GenerateShopItems()
+	end)
+
+	-- Listen for new shop rooms being created
+	workspace.ChildAdded:Connect(function(child)
+		if child:IsA("Model") and string.find(child.Name, "ShopRoom") then
+			print("🏪 Detected new shop room:", child.Name)
+			task.wait(1) -- Wait for room to fully load
+			self:CreateShopInRoom(child)
+		end
+	end)
+
+	-- Handle existing shop rooms in workspace
+	for _, room in pairs(workspace:GetChildren()) do
+		if room:IsA("Model") and string.find(room.Name, "ShopRoom") then
+			print("🏪 Found existing shop room:", room.Name)
+			self:CreateShopInRoom(room)
+		end
+	end
+
+	-- Handle purchase requests
+	buyItemRemote.OnServerEvent:Connect(function(player, itemIndex)
+		self:HandlePurchase(player, itemIndex)
+	end)
+
+	print("✅ Simple Shop System ready!")
+end
+
+function ShopSystem:WaitForItemSystems()
+	print("⏳ Waiting for item systems to load...")
+
+	local attempts = 0
+	local maxAttempts = 100 -- 10 seconds maximum wait
+
+	while attempts < maxAttempts do
+		-- Check if either system is available
+		local hasItemDatabase = ReplicatedStorage:FindFirstChild("ItemDatabase") ~= nil
+		local hasItemSpawner = _G.ItemSpawner and _G.ItemSpawner.itemTemplates ~= nil
+
+		if hasItemDatabase or hasItemSpawner then
+			print("✅ Item systems found after", attempts * 0.1, "seconds")
+			if hasItemDatabase then print("  ✅ ItemDatabase available") end
+			if hasItemSpawner then print("  ✅ ItemSpawner available") end
+			return
+		end
+
+		task.wait(0.1)
+		attempts = attempts + 1
+	end
+
+	print("⚠️ Item systems not found after 10 seconds - using fallback items")
+end
+
+function ShopSystem:GenerateShopItems()
+	currentShopItems = {}
+
+	print("🔄 Generating shared shop items...")
+
+	-- Use the ORIGINAL working logic that generated 4 items
+	for i = 1, SHOP_CONFIG.SHARED_ITEMS do
+		local itemId = self:GetRandomItemFromDatabase()
+		if itemId then
+			local itemData = self:GetItemData(itemId)
+			if itemData then
+				table.insert(currentShopItems, {
+					id = itemId,
+					name = itemData.name or itemId,
+					rarity = itemData.rarity or "COMMON",
+					price = self:CalculatePrice(itemData.rarity or "COMMON"),
+					sold = false
+					-- Remove isUnique field from shared items
+				})
+				print("  ✅ Added shared item:", itemData.name or itemId)
+			end
+		end
+	end
+
+	print("🛍️ Generated", #currentShopItems, "shared shop items")
+end
+
+function ShopSystem:GenerateUniqueItemForPlayer(player)
+	local playerId = tostring(player.UserId)
+
+	-- Check if player already has a unique item generated
+	if playerUniqueItems[playerId] then
+		return playerUniqueItems[playerId]
+	end
+
+	-- Generate new unique item for this player
+	local itemId = self:GetRandomItemFromDatabase()
+	if itemId then
+		local itemData = self:GetItemData(itemId)
+		if itemData then
+			local uniqueItem = {
+				id = itemId,
+				name = itemData.name or itemId,
+				rarity = itemData.rarity or "COMMON",
+				price = math.floor(self:CalculatePrice(itemData.rarity or "COMMON") * 0.8), -- 20% discount for unique items
+				sold = false,
+				isUnique = true,
+				owner = playerId
+			}
+
+			playerUniqueItems[playerId] = uniqueItem
+			print("✨ Generated unique item for", player.Name .. ":", uniqueItem.name)
+			return uniqueItem
+		end
+	end
+
+	return nil
+end
+
+function ShopSystem:GetRandomItemFromDatabase()
+	-- Try to get from ItemDatabase first
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase and ItemDatabase.GetRandomItemFromPool then
+			local item = ItemDatabase:GetRandomItemFromPool("SHOP")
+			if item then return item end
+		end
+	end
+
+	-- Fallback: get from ItemSpawner
+	if _G.ItemSpawner and _G.ItemSpawner.itemTemplates then
+		local items = {}
+		for itemId, _ in pairs(_G.ItemSpawner.itemTemplates) do
+			table.insert(items, itemId)
+		end
+
+		if #items > 0 then
+			return items[math.random(1, #items)]
+		end
+	end
+
+	-- Final fallback: use basic test items
+	local fallbackItems = {
+		"sad_onion", "magic_mushroom", "the_spoon", "lucky_foot", 
+		"boom_stick", "health_up", "speed_up", "damage_up"
+	}
+
+	return fallbackItems[math.random(1, #fallbackItems)]
+end
+
+function ShopSystem:GetItemData(itemId)
+	-- Try ItemDatabase first
+	if ReplicatedStorage:FindFirstChild("ItemDatabase") then
+		local success, ItemDatabase = pcall(function()
+			return require(ReplicatedStorage.Modules.ItemDatabase)
+		end)
+
+		if success and ItemDatabase and ItemDatabase.GetItemData then
+			local data = ItemDatabase:GetItemData(itemId)
+			if data then return data end
+		end
+	end
+
+	-- Fallback: create basic item data
+	local fallbackData = {
+		["sad_onion"] = {name = "Sad Onion", rarity = "COMMON"},
+		["magic_mushroom"] = {name = "Magic Mushroom", rarity = "RARE"},
+		["the_spoon"] = {name = "The Spoon", rarity = "UNCOMMON"},
+		["lucky_foot"] = {name = "Lucky Foot", rarity = "RARE"},
+		["boom_stick"] = {name = "Boom Stick", rarity = "LEGENDARY"},
+		["health_up"] = {name = "Health Up", rarity = "COMMON"},
+		["speed_up"] = {name = "Speed Up", rarity = "COMMON"},
+		["damage_up"] = {name = "Damage Up", rarity = "COMMON"}
+	}
+
+	return fallbackData[itemId] or {
+		name = itemId:gsub("_", " "):gsub("(%a)([%w_']*)", function(first, rest) return first:upper()..rest end),
+		rarity = "COMMON"
+	}
+end
+
+function ShopSystem:CalculatePrice(rarity)
+	return SHOP_CONFIG.BASE_PRICES[rarity] or 10
+end
+
+function ShopSystem:CreateShopInRoom(room)
+	print("🏗️ Creating shop in room:", room.Name)
+
+	-- Find floor
+	local floor = room:FindFirstChild("Floor") or room:FindFirstChildOfClass("Part")
+	if not floor then
+		warn("❌ No floor found in shop room:", room.Name)
+		return
+	end
+
+	-- Create shop stand
+	local shopStand = Instance.new("Model")
+	shopStand.Name = "ShopStand"
+	shopStand.Parent = room
+
+	-- Shop counter
+	local counter = Instance.new("Part")
+	counter.Name = "Counter"
+	counter.Size = Vector3.new(8, 3, 1)
+	counter.Position = Vector3.new(
+		floor.Position.X,
+		floor.Position.Y + floor.Size.Y/2 + 1.5,
+		floor.Position.Z - floor.Size.Z/3
+	)
+	counter.Material = Enum.Material.Wood
+	counter.BrickColor = BrickColor.new("Brown")
+	counter.Anchored = true
+	counter.Parent = shopStand
+
+	-- Red interaction brick
+	local interactionBrick = Instance.new("Part")
+	interactionBrick.Name = "ShopInteraction"
+	interactionBrick.Size = Vector3.new(2, 0.2, 2)
+	interactionBrick.Position = Vector3.new(
+		counter.Position.X,
+		floor.Position.Y + floor.Size.Y/2 + 0.1,
+		counter.Position.Z + 3
+	)
+	interactionBrick.Material = Enum.Material.Neon
+	interactionBrick.BrickColor = BrickColor.new("Bright red")
+	interactionBrick.Anchored = true
+	interactionBrick.Parent = shopStand
+
+	-- Shop sign
+	local sign = Instance.new("Part")
+	sign.Name = "Sign"
+	sign.Size = Vector3.new(4, 1, 0.1)
+	sign.Position = Vector3.new(
+		counter.Position.X,
+		counter.Position.Y + 2,
+		counter.Position.Z
+	)
+	sign.Material = Enum.Material.SmoothPlastic
+	sign.BrickColor = BrickColor.new("White")
+	sign.Anchored = true
+	sign.Parent = shopStand
+
+	-- Sign text
+	local signGui = Instance.new("SurfaceGui")
+	signGui.Face = Enum.NormalId.Front
+	signGui.Parent = sign
+
+	local signLabel = Instance.new("TextLabel")
+	signLabel.Size = UDim2.new(1, 0, 1, 0)
+	signLabel.BackgroundTransparency = 1
+	signLabel.Text = "🏪 SHOP"
+	signLabel.TextScaled = true
+	signLabel.Font = Enum.Font.SourceSansBold
+	signLabel.TextColor3 = Color3.new(0, 0, 0)
+	signLabel.Parent = signGui
+
+	-- Handle player interactions
+	local connection = interactionBrick.Touched:Connect(function(hit)
+		local humanoid = hit.Parent:FindFirstChild("Humanoid")
+		if humanoid then
+			local player = Players:GetPlayerFromCharacter(hit.Parent)
+			if player then
+				self:OpenShopForPlayer(player)
+			end
+		end
+	end)
+
+	shopStands[room] = {
+		model = shopStand,
+		connection = connection
+	}
+end
+
+function ShopSystem:OpenShopForPlayer(player)
+	-- Create combined shop data (shared + unique) 
+	local playerShopData = {}
+
+	-- Add shared items first (copy the data properly)
+	for i, item in pairs(currentShopItems) do
+		table.insert(playerShopData, {
+			id = item.id,
+			name = item.name,
+			rarity = item.rarity,
+			price = item.price,
+			sold = item.sold,
+			isUnique = false
+		})
+	end
+
+	-- Add player's unique item as the 4th item
+	local uniqueItem = self:GenerateUniqueItemForPlayer(player)
+	if uniqueItem then
+		table.insert(playerShopData, uniqueItem)
+	end
+
+	openShopRemote:FireClient(player, playerShopData)
+	print("🛒 Opened shop for", player.Name, "- Shared:", #currentShopItems, "Unique:", uniqueItem and 1 or 0, "Total:", #playerShopData)
+end
+
+function ShopSystem:HandlePurchase(player, itemIndex)
+	local playerId = tostring(player.UserId)
+
+	-- Determine if this is a shared or unique item
+	local item = nil
+	local isUniqueItem = false
+
+	if itemIndex <= #currentShopItems then
+		-- Shared item
+		item = currentShopItems[itemIndex]
+	elseif itemIndex == #currentShopItems + 1 then
+		-- Unique item
+		item = playerUniqueItems[playerId]
+		isUniqueItem = true
+	end
+
+	if not item or item.sold then
+		print("❌ Item not available or already sold")
+		return
+	end
+
+	-- Check if player has enough coins
+	local coins = self:GetPlayerCoins(player)
+	if coins < item.price then
+		print("❌", player.Name, "needs", item.price - coins, "more coins")
+		return
+	end
+
+	-- Deduct coins
+	self:RemovePlayerCoins(player, item.price)
+
+	-- Mark item as sold
+	item.sold = true
+
+	-- Give item to player
+	self:GiveItemToPlayer(player, item.id)
+
+	print("💰", player.Name, "bought", item.name, "for", item.price, "coins", isUniqueItem and "(UNIQUE)" or "(SHARED)")
+
+	if isUniqueItem then
+		-- Only notify the buyer for unique items
+		self:OpenShopForPlayer(player)
+	else
+		-- Notify all players for shared items
+		for _, p in pairs(Players:GetPlayers()) do
+			self:OpenShopForPlayer(p)
+		end
+	end
+end
+
+function ShopSystem:GetPlayerCoins(player)
+	if _G.EnemyDropManager then
+		local inventory = _G.EnemyDropManager:getPlayerInventory(player)
+		return inventory and inventory.coins or 0
+	end
+	return 0
+end
+
+function ShopSystem:RemovePlayerCoins(player, amount)
+	if _G.EnemyDropManager then
+		local inventory = _G.EnemyDropManager:getPlayerInventory(player)
+		if inventory then
+			inventory.coins = inventory.coins - amount
+		end
+	end
+end
+
+function ShopSystem:GiveItemToPlayer(player, itemId)
+	-- Use existing item effects system if available
+	if _G.ItemEffects then
+		_G.ItemEffects:ApplyItemEffects(player, itemId)
+	else
+		print("⚠️ No ItemEffects system found, item given but no effects applied")
+	end
+end
+
+-- ========================================================================
+-- INITIALIZE
+-- ========================================================================
+
+ShopSystem:Initialize()
+
+-- Debug commands
+_G.ShopStatus = function()
+	print("🏪 SHOP STATUS:")
+	print("Shared items:", #currentShopItems)
+	for i, item in pairs(currentShopItems) do
+		print(" ", i .. ".", item.name, "-", item.price, "coins", item.sold and "(SOLD)" or "")
+	end
+	print("Unique items generated:", 0)
+	for playerId, item in pairs(playerUniqueItems) do
+		local player = Players:GetPlayerByUserId(tonumber(playerId))
+		local playerName = player and player.Name or "Unknown"
+		print(" ", playerName .. ":", item.name, "-", item.price, "coins", item.sold and "(SOLD)" or "")
+	end
+	print("Active shop stands:", #shopStands)
+end
+
+_G.RefreshShop = function()
+	ShopSystem:GenerateShopItems()
+	playerUniqueItems = {} -- Clear unique items to regenerate
+	-- Update all players
+	for _, player in pairs(Players:GetPlayers()) do
+		ShopSystem:OpenShopForPlayer(player)
+	end
+	print("🔄 Shop refreshed with new items!")
+end
+
+print("🏪 Simple Shop System loaded!")
+print("🔧 Debug: _G.ShopStatus() and _G.RefreshShop()")
