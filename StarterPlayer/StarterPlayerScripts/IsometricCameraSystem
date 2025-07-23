@@ -22,7 +22,7 @@ local mouse = player:GetMouse()
 local zoom = 140              -- Default zoom distance
 local minZoom = 10            -- Minimum zoom 
 local maxZoom = 200           -- Maximum zoom
-local fieldOfView = 15         -- Low FOV for isometric look
+local fieldOfView = 10         -- Low FOV for isometric look
 local transparency = 0.5      -- Transparency for objects blocking view
 
 -- Room tracking
@@ -54,12 +54,9 @@ local function updateCamera()
 	if character and character:FindFirstChild("HumanoidRootPart") then
 		local root = character.HumanoidRootPart
 
-		-- Isometric camera position (45-degree angle)
-		local offset = Vector3.new(zoom, zoom, zoom)
+		-- Try a steeper angle for better vertical visibility
+		local offset = Vector3.new(zoom * 0.8, zoom, zoom * 0.8)  -- Less X/Z, more Y
 		camera.CFrame = CFrame.new(root.Position + offset, root.Position)
-
-		-- Set audio listener
-		game:GetService("SoundService"):SetListener(Enum.ListenerType.ObjectCFrame, root)
 	end
 end
 
