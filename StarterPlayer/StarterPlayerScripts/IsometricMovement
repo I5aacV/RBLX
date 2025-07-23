@@ -1,12 +1,12 @@
 -- ========================================================================
--- ISOMETRIC MOVEMENT SYSTEM
--- Replaces default Roblox movement to work with isometric camera
--- Place in StarterPlayerScripts
+-- ISOMETRIC MOVEMENT SYSTEM WITH ITEMEFFECTS INTEGRATION
+-- Replaces your IsometricMovement script
 -- ========================================================================
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 
@@ -14,20 +14,57 @@ local player = Players.LocalPlayer
 -- CONFIGURATION
 -- ========================================================================
 
-local MOVE_SPEED = 16         -- Movement speed (studs per second)
+local BASE_MOVE_SPEED = 16    -- Base movement speed (will be modified by ItemEffects)
 local SMOOTH_FACTOR = 0.8     -- How smooth movement feels (0-1)
+
+-- Current player stats (updated by ItemEffects)
+local playerMovementStats = {
+	speed = BASE_MOVE_SPEED,
+	canFly = false
+}
+
+-- Sprinting configuration
+local SPRINT_MULTIPLIER = 1.5   -- How much faster sprinting is
+local isSprinting = false
 
 -- Input tracking
 local inputState = {
 	up = false,      -- W key
 	down = false,    -- S key  
 	left = false,    -- A key
-	right = false    -- D key
+	right = false,   -- D key
+	sprint = false   -- Left Shift key
 }
 
 -- Movement state
 local moveDirection = Vector3.new(0, 0, 0)
 local bodyVelocity = nil
+
+-- ========================================================================
+-- ITEMEFFECTS INTEGRATION
+-- ========================================================================
+
+-- Listen for stats updates from ItemEffects system
+local statsUpdateEvent = ReplicatedStorage:FindFirstChild("UpdatePlayerStats")
+if statsUpdateEvent then
+	statsUpdateEvent.OnClientEvent:Connect(function(newStats)
+		if not newStats then return end
+
+		-- Update movement speed from ItemEffects
+		local baseSpeed = BASE_MOVE_SPEED
+		local speedMultiplier = newStats.speed or 16 -- ItemEffects uses 16 as base
+
+		-- Convert ItemEffects speed to our movement speed
+		-- ItemEffects speed goes: 16 (normal), higher = faster
+		playerMovementStats.speed = speedMultiplier
+		playerMovementStats.canFly = newStats.canFly or false
+
+		print("🏃 Movement speed updated:", playerMovementStats.speed, "(from ItemEffects)")
+		if playerMovementStats.canFly then
+			print("✈️ Flight enabled!")
+		end
+	end)
+end
 
 -- ========================================================================
 -- MOVEMENT FUNCTIONS
@@ -38,21 +75,20 @@ local function updateMovementDirection()
 	local x = 0
 	local z = 0
 
-	-- Calculate direction based on isometric camera angle
-	-- In isometric view, we need to rotate movement by 45 degrees
-	if inputState.up then z = z - 1 end      -- W moves up-left
-	if inputState.down then z = z + 1 end    -- S moves down-right  
-	if inputState.left then x = x - 1 end    -- A moves down-left
-	if inputState.right then x = x + 1 end   -- D moves up-right
+	-- Get raw input
+	if inputState.up then z = z - 1 end      -- W 
+	if inputState.down then z = z + 1 end    -- S 
+	if inputState.left then x = x - 1 end    -- A 
+	if inputState.right then x = x + 1 end   -- D 
 
-	-- Convert to isometric movement (45-degree rotation)
-	local isoX = (x - z) * 0.707  -- cos(45°) ≈ 0.707
-	local isoZ = (x + z) * 0.707  -- sin(45°) ≈ 0.707
+	-- Transform to match the isometric camera view
+	if x ~= 0 or z ~= 0 then
+		-- For camera at (zoom, zoom, zoom), this transformation works:
+		local newX = (x + z) * 0.707  -- Diagonal movement
+		local newZ = (z - x) * 0.707  -- Diagonal movement
 
-	moveDirection = Vector3.new(isoX, 0, isoZ).Unit
-
-	-- If no input, stop moving
-	if x == 0 and z == 0 then
+		moveDirection = Vector3.new(newX, 0, newZ).Unit
+	else
 		moveDirection = Vector3.new(0, 0, 0)
 	end
 end
@@ -76,23 +112,52 @@ local function applyMovement()
 		bodyVelocity.Parent = humanoidRootPart
 	end
 
-	-- Calculate target velocity
-	local targetVelocity = moveDirection * MOVE_SPEED
+	-- Calculate current speed with sprinting
+	local currentSpeed = playerMovementStats.speed
+	if inputState.sprint and moveDirection.Magnitude > 0 and not playerMovementStats.canFly then
+		currentSpeed = currentSpeed * SPRINT_MULTIPLIER
+		isSprinting = true
+	else
+		isSprinting = false
+	end
+
+	-- Calculate target velocity using ItemEffects speed with sprint modifier
+	local targetVelocity = moveDirection * currentSpeed
 
 	-- Smooth movement interpolation
 	local currentVelocity = bodyVelocity.Velocity
 	local newVelocity = currentVelocity:Lerp(targetVelocity, SMOOTH_FACTOR)
 
-	-- Apply movement
-	bodyVelocity.Velocity = Vector3.new(newVelocity.X, 0, newVelocity.Z)
+	-- Apply movement (preserve Y velocity for gravity/jumping)
+	bodyVelocity.Velocity = Vector3.new(newVelocity.X, currentVelocity.Y, newVelocity.Z)
 
-	-- Update humanoid for animations
+	-- Update humanoid WalkSpeed to match for animations
+	-- (ItemEffects will override this, but we set it as a base)
 	if moveDirection.Magnitude > 0 then
-		humanoid.WalkSpeed = MOVE_SPEED
-		-- You can add walking animations here if needed
+		humanoid.WalkSpeed = currentSpeed
 	else
 		humanoid.WalkSpeed = 0
-		-- You can add idle animations here if needed
+	end
+
+	-- Handle flight if enabled by items
+	if playerMovementStats.canFly then
+		-- Allow Y movement when flying
+		bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
+
+		-- Flight controls: Space = up, Ctrl = down (since Shift is now sprint)
+		local yInput = 0
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			yInput = yInput + 1
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+			yInput = yInput - 1
+		end
+
+		-- Apply vertical movement for flight (no sprinting while flying)
+		bodyVelocity.Velocity = Vector3.new(newVelocity.X, yInput * playerMovementStats.speed * 0.8, newVelocity.Z)
+	else
+		-- Normal ground movement
+		bodyVelocity.MaxForce = Vector3.new(4000, 0, 4000)
 	end
 end
 
@@ -124,6 +189,11 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	elseif input.KeyCode == Enum.KeyCode.D then
 		inputState.right = true
 		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.LeftShift then
+		inputState.sprint = true
+		if isSprinting then
+			print("🏃💨 SPRINTING at", string.format("%.1f", playerMovementStats.speed * SPRINT_MULTIPLIER), "speed!")
+		end
 	end
 end)
 
@@ -143,6 +213,11 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 	elseif input.KeyCode == Enum.KeyCode.D then
 		inputState.right = false
 		updateMovementDirection()
+	elseif input.KeyCode == Enum.KeyCode.LeftShift then
+		inputState.sprint = false
+		if not isSprinting then
+			print("🚶 Stopped sprinting")
+		end
 	end
 end)
 
@@ -157,14 +232,16 @@ local function onCharacterAdded(character)
 	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 	local humanoid = character:WaitForChild("Humanoid")
 
-	-- Disable default Roblox movement
+	-- Configure humanoid for custom movement
 	humanoid.PlatformStand = false
-	humanoid.WalkSpeed = 0  -- We'll control this manually
+	humanoid.WalkSpeed = playerMovementStats.speed -- Set initial speed
+	-- Don't disable jumping - let Roblox handle it
 
 	-- Clean up any existing movement
 	cleanupMovement()
 
-	print("✅ Isometric movement system ready!")
+	print("✅ Isometric movement system ready with ItemEffects integration!")
+	print("🏃 Current speed:", playerMovementStats.speed)
 end
 
 -- Handle character removal
@@ -186,9 +263,13 @@ player.CharacterRemoving:Connect(onCharacterRemoving)
 -- Start movement update loop
 RunService.Heartbeat:Connect(applyMovement)
 
-print("✅ Isometric Movement System loaded!")
+print("✅ ItemEffects-Integrated Isometric Movement System loaded!")
 print("🎮 CONTROLS:")
 print("  WASD - Move in isometric directions")
-print("  📐 Movement rotated 45° for isometric camera")
-print("  🏃 Smooth physics-based movement")
-print("  ⚡ Speed:", MOVE_SPEED, "studs/second")
+print("  Left Shift - Sprint (1.5x speed, ground only)")
+print("  Space/Left Ctrl - Up/Down when flying")
+print("  📐 Movement properly rotated for isometric camera")
+print("  🏃 Speed controlled by ItemEffects system")
+print("  💨 Sprinting multiplies speed by", SPRINT_MULTIPLIER .. "x")
+print("  ✈️ Flight enabled by items like Dead Sea Scrolls")
+print("  ⚡ Base Speed:", BASE_MOVE_SPEED, "studs/second")
