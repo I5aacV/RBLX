@@ -1,47 +1,52 @@
 -- ========================================================================
--- FIXED ENEMY AI MANAGER - Complete Script with All Fixes Applied
+-- FINAL CLEAN ENEMY AI MANAGER - Complete Rewrite
 -- Place this in ServerScriptService/Systems/EnemyAIManager
 -- ========================================================================
 
 local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
-local PathfindingService = game:GetService("PathfindingService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ========================================================================
--- AI CONFIGURATION
+-- CONFIGURATION
 -- ========================================================================
 
 local AI_CONFIG = {
-	-- Detection ranges
 	DETECTION_RANGE = 50,
 	ATTACK_RANGE = 8,
 	RANGED_ATTACK_RANGE = 35,
-	LEAP_RANGE = 30,
 
-	-- Movement speeds
 	SLOW_SPEED = 8,
 	NORMAL_SPEED = 12,
 	FAST_SPEED = 16,
 	FLYING_SPEED = 14,
 
-	-- Attack timings
 	MELEE_COOLDOWN = 1.5,
 	RANGED_COOLDOWN = 2.0,
-	LEAP_COOLDOWN = 1.5,
 
-	-- Behavioral settings
 	UPDATE_FREQUENCY = 0.1,
-	PATHFINDING_REFRESH = 1.0,
-	STUCK_THRESHOLD = 2.0,
-
-	-- Visual effects
 	PROJECTILE_SPEED = 40,
-	LEAP_HEIGHT = 30,
 	DAMAGE_AMOUNT = 1
+}
 
+local MOVEMENT_CONFIG = {
+	OBSTACLE_CHECK_DISTANCE = 5,
+	STUCK_CHECK_TIME = 2.0,
+	STUCK_DISTANCE_THRESHOLD = 2,
+	GROUND_CHECK_DISTANCE = 50,
+
+	ENEMY_PERSONAL_SPACE = 4,
+	ENEMY_DETECTION_RADIUS = 8,
+	SPACING_FORCE_MULTIPLIER = 1.5,
+
+	AVOIDANCE_DIRECTIONS = {
+		Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
+		Vector3.new(0, 0, 1), Vector3.new(0, 0, -1),
+		Vector3.new(1, 0, 1), Vector3.new(-1, 0, 1),
+		Vector3.new(1, 0, -1), Vector3.new(-1, 0, -1)
+	}
 }
 
 -- ========================================================================
@@ -50,7 +55,7 @@ local AI_CONFIG = {
 
 local AI_TYPES = {
 	CHASER = {
-		tag = "AI_Chaser", 
+		tag = "AI_Chaser",
 		name = "Chaser AI",
 		description = "Follows player and attacks on contact",
 		movementType = "GROUND",
@@ -61,7 +66,7 @@ local AI_TYPES = {
 
 	SHOOTER = {
 		tag = "AI_Shooter",
-		name = "Shooter AI", 
+		name = "Shooter AI",
 		description = "Maintains distance and shoots projectiles",
 		movementType = "GROUND",
 		speed = AI_CONFIG.SLOW_SPEED,
@@ -73,31 +78,21 @@ local AI_TYPES = {
 	FLYER = {
 		tag = "AI_Flyer",
 		name = "Flying AI",
-		description = "Flies around and shoots from above",
+		description = "Flies overhead and dives at player with hit-and-run attacks",
 		movementType = "FLYING",
 		speed = AI_CONFIG.FLYING_SPEED,
-		attackType = "RANGED",
-		behavior = "EVASIVE",
-		preferredDistance = 20,
-		flyHeight = 8
-	},
-
-	LEAPER = {
-		tag = "AI_Leaper", 
-		name = "Leaper AI",
-		description = "Aggressively leaps at player for surprise attacks",
-		movementType = "GROUND",
-		speed = AI_CONFIG.NORMAL_SPEED, -- Changed from SLOW_SPEED
-		attackType = "LEAP",
-		behavior = "AMBUSH",
-		leapForce = 60 -- Increased from 50
+		attackType = "MELEE",
+		behavior = "HIT_AND_RUN",
+		preferredDistance = 15,
+		flyHeight = 8,
+		diveSpeed = 20
 	},
 
 	ORBITER = {
 		tag = "AI_Orbiter",
 		name = "Orbiter AI",
 		description = "Circles around player while attacking",
-		movementType = "GROUND", 
+		movementType = "GROUND",
 		speed = AI_CONFIG.NORMAL_SPEED,
 		attackType = "RANGED",
 		behavior = "TACTICAL",
@@ -110,9 +105,19 @@ local AI_TYPES = {
 		description = "Flees from player, attacks from far away",
 		movementType = "GROUND",
 		speed = AI_CONFIG.FAST_SPEED,
-		attackType = "RANGED", 
+		attackType = "RANGED",
 		behavior = "DEFENSIVE",
 		fleeDistance = 20
+	},
+
+	WANDERER = {
+		tag = "AI_Wanderer",
+		name = "Wanderer AI",
+		description = "Walks around randomly like NPC, damages on contact",
+		movementType = "GROUND",
+		speed = AI_CONFIG.SLOW_SPEED,
+		attackType = "CONTACT",
+		behavior = "WANDER"
 	}
 }
 
@@ -125,20 +130,11 @@ EnemyAIManager.__index = EnemyAIManager
 
 function EnemyAIManager.new()
 	local self = setmetatable({}, EnemyAIManager)
-
 	self.activeEnemies = {}
 	self.lastUpdate = {}
-	self.pathfindingCache = {}
-	self.aiConnections = {}
-
 	self:initializeAI()
-
 	return self
 end
-
--- ========================================================================
--- AI INITIALIZATION & MANAGEMENT
--- ========================================================================
 
 function EnemyAIManager:initializeAI()
 	print("🤖 Initializing Enemy AI System...")
@@ -148,7 +144,6 @@ function EnemyAIManager:initializeAI()
 	end
 
 	self:startAIUpdateLoop()
-
 	print("✅ Enemy AI System initialized with", self:countAITypes(), "AI types")
 end
 
@@ -165,157 +160,71 @@ function EnemyAIManager:setupAIType(aiType, config)
 end
 
 function EnemyAIManager:registerEnemy(enemy, aiType, config)
-	if not enemy:FindFirstChild("Humanoid") then
-		warn("❌ Enemy missing Humanoid:", enemy.Name)
-		return
-	end
-
-	print("👹 Registering enemy:", enemy.Name, "with AI:", config.name)
-
-	-- SPECIAL SETUP FOR LEAPERS
-	if aiType == "LEAPER" then
-		print("🦘 Setting up Leaper physics...")
-		local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-		local humanoid = enemy:FindFirstChild("Humanoid")
-
-		if rootPart and humanoid then
-			-- CRITICAL: Ensure proper physics setup
-			rootPart.Anchored = false
-			rootPart.CanCollide = true
-
-			-- Allow physics states
-			humanoid.PlatformStand = false
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Flying, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-
-			-- Remove any existing body movers that might interfere
-			for _, child in pairs(rootPart:GetChildren()) do
-				if child:IsA("BodyVelocity") or child:IsA("BodyPosition") or child:IsA("BodyAngularVelocity") then
-					child:Destroy()
-				end
-			end
-
-			print("✅ Leaper physics configured")
-		end
-	end
-
-	-- Rest of existing registerEnemy code...
-	local aiData = {
-		enemy = enemy,
-		aiType = aiType,
-		config = config,
-		lastPosition = enemy:FindFirstChild("HumanoidRootPart") and enemy.HumanoidRootPart.Position,
-		lastPathUpdate = 0,
-		lastAttack = 0,
-		stuckTimer = 0,
-		currentPath = nil,
-		currentTarget = nil,
-		isLeaping = false,
-		orbitAngle = math.random() * math.pi * 2,
-		lastKnownPlayerPos = nil
-	}
-
-	self.activeEnemies[enemy] = aiData
-
-	local humanoid = enemy:FindFirstChild("Humanoid")
-	if humanoid then
-		humanoid.Died:Connect(function()
-			self:unregisterEnemy(enemy)
-		end)
-	end
-
-	enemy.AncestryChanged:Connect(function()
-		if not enemy.Parent then
-			self:unregisterEnemy(enemy)
-		end
-	end)
-end
-
-function EnemyAIManager:unregisterEnemy(enemy)
-	if self.activeEnemies[enemy] then
-		print("🗑️ Unregistering enemy:", enemy and enemy.Name or "Unknown")
-
-		-- Clean up all references
-		self.activeEnemies[enemy] = nil
-		self.pathfindingCache[enemy] = nil
-		self.lastUpdate[enemy] = nil
-
-		-- Clean up any BodyPosition objects for flying enemies
-		if enemy and enemy.Parent then
-			local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-			if rootPart then
-				local bodyPosition = rootPart:FindFirstChild("BodyPosition")
-				if bodyPosition then
-					bodyPosition:Destroy()
-				end
-			end
-		end
-	end
-end
-
--- ========================================================================
--- MAIN AI UPDATE LOOP
--- ========================================================================
-
-function EnemyAIManager:startAIUpdateLoop()
-	print("🔄 Starting AI update loop...")
-
-	local lastUpdate = tick()
-
-	self.aiConnections.mainLoop = RunService.Heartbeat:Connect(function()
-		local currentTime = tick()
-
-		if currentTime - lastUpdate < AI_CONFIG.UPDATE_FREQUENCY then
-			return
-		end
-
-		-- Update all active enemies with safety checks
-		local enemiesToRemove = {}
-
-		for enemy, aiData in pairs(self.activeEnemies) do
-			if not enemy or not enemy.Parent then
-				table.insert(enemiesToRemove, enemy)
-			else
-				local humanoid = aiData.enemy:FindFirstChild("Humanoid")
-				if humanoid and humanoid.Health > 0 then
-					local success, error = pcall(function()
-						self:updateEnemyAI(aiData, currentTime)
-					end)
-
-					if not success then
-						warn("❌ AI Update error for", enemy.Name, ":", error)
-					end
-				else
-					table.insert(enemiesToRemove, enemy)
-				end
-			end
-		end
-
-		-- Clean up invalid enemies
-		for _, enemy in pairs(enemiesToRemove) do
-			self:unregisterEnemy(enemy)
-		end
-
-		lastUpdate = currentTime
-	end)
-end
-
-function EnemyAIManager:updateEnemyAI(aiData, currentTime)
-	local enemy = aiData.enemy
-	local config = aiData.config
-
-	-- FIXED: Safety checks added
-	if not enemy or not enemy.Parent then
-		self:unregisterEnemy(enemy)
-		return
-	end
+	if self.activeEnemies[enemy] then return end
 
 	local humanoid = enemy:FindFirstChild("Humanoid")
 	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
 
 	if not humanoid or not rootPart then
-		print("❌ Enemy missing essential parts, removing from AI:", enemy.Name)
+		warn("❌ Enemy missing essential parts:", enemy.Name)
+		return
+	end
+
+	self.activeEnemies[enemy] = {
+		enemy = enemy,
+		aiType = aiType,
+		config = config,
+		lastAttack = 0,
+		currentTarget = nil,
+		lastKnownPlayerPos = nil,
+		strafeDirection = nil,
+		stuckDetection = nil
+	}
+
+	humanoid.Died:Connect(function()
+		self:unregisterEnemy(enemy)
+	end)
+
+	print("✅ Registered", config.name, "for", enemy.Name)
+end
+
+function EnemyAIManager:unregisterEnemy(enemy)
+	if self.activeEnemies[enemy] then
+		self.activeEnemies[enemy] = nil
+		print("🗑️ Unregistered enemy:", enemy.Name)
+	end
+end
+
+function EnemyAIManager:startAIUpdateLoop()
+	print("🔄 Starting AI update loop...")
+
+	RunService.Heartbeat:Connect(function()
+		local currentTime = tick()
+
+		for enemy, aiData in pairs(self.activeEnemies) do
+			if enemy.Parent and aiData then
+				if not self.lastUpdate[enemy] or currentTime - self.lastUpdate[enemy] >= AI_CONFIG.UPDATE_FREQUENCY then
+					self:updateEnemyAI(aiData, currentTime)
+					self.lastUpdate[enemy] = currentTime
+				end
+			else
+				self:unregisterEnemy(enemy)
+			end
+		end
+	end)
+end
+
+-- ========================================================================
+-- CORE AI UPDATE
+-- ========================================================================
+
+function EnemyAIManager:updateEnemyAI(aiData, currentTime)
+	local enemy = aiData.enemy
+	local config = aiData.config
+	local humanoid = enemy:FindFirstChild("Humanoid")
+	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart then
 		self:unregisterEnemy(enemy)
 		return
 	end
@@ -325,7 +234,18 @@ function EnemyAIManager:updateEnemyAI(aiData, currentTime)
 		return
 	end
 
-	-- Find nearest player
+	-- Handle flying movement
+	if config.movementType == "FLYING" then
+		self:handleFlyingMovement(aiData)
+	end
+
+	-- Route to behavior
+	if config.behavior == "WANDER" then
+		self:updateWandererAI(aiData, currentTime)
+		return
+	end
+
+	-- Find nearest player for targeting behaviors
 	local target = self:findNearestPlayer(rootPart.Position)
 	if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then
 		humanoid:MoveTo(rootPart.Position)
@@ -333,35 +253,27 @@ function EnemyAIManager:updateEnemyAI(aiData, currentTime)
 	end
 
 	local targetPosition = target.Character.HumanoidRootPart.Position
-	local enemyPosition = rootPart.Position
-	local distance = (targetPosition - enemyPosition).Magnitude
+	local distance = (targetPosition - rootPart.Position).Magnitude
 
-	-- Check if player is in detection range
 	if distance > AI_CONFIG.DETECTION_RANGE then
-		humanoid:MoveTo(enemyPosition)
+		humanoid:MoveTo(rootPart.Position)
 		return
 	end
 
-	-- Update AI based on type
 	aiData.currentTarget = target
 	aiData.lastKnownPlayerPos = targetPosition
 
-	-- Route to specific AI behavior
+	-- Route to specific behaviors
 	if config.behavior == "AGGRESSIVE" then
-		self:updateChaserAI(aiData, targetPosition, distance, currentTime)
-	elseif config.behavior == "CAUTIOUS" or config.behavior == "EVASIVE" then
-		self:updateShooterAI(aiData, targetPosition, distance, currentTime)
-	elseif config.behavior == "AMBUSH" then
-		self:updateLeaperAI(aiData, targetPosition, distance, currentTime)
+		self:updateChaserAI(aiData, targetPosition, distance)
+	elseif config.behavior == "CAUTIOUS" then
+		self:updateShooterAI(aiData, targetPosition, distance)
+	elseif config.behavior == "HIT_AND_RUN" then
+		self:updateFlyerAI(aiData, targetPosition, distance, currentTime)
 	elseif config.behavior == "TACTICAL" then
-		self:updateOrbiterAI(aiData, targetPosition, distance, currentTime)
+		self:updateOrbiterAI(aiData, targetPosition, distance)
 	elseif config.behavior == "DEFENSIVE" then
-		self:updateCowardAI(aiData, targetPosition, distance, currentTime)
-	end
-
-	-- Handle flying movement
-	if config.movementType == "FLYING" then
-		self:handleFlyingMovement(aiData)
+		self:updateCowardAI(aiData, targetPosition, distance)
 	end
 
 	-- Check for attacks
@@ -369,155 +281,208 @@ function EnemyAIManager:updateEnemyAI(aiData, currentTime)
 end
 
 -- ========================================================================
--- SPECIFIC AI BEHAVIORS
+-- AI BEHAVIORS
 -- ========================================================================
 
-function EnemyAIManager:updateChaserAI(aiData, targetPosition, distance, currentTime)
-	local enemy = aiData.enemy
-	local humanoid = enemy:FindFirstChild("Humanoid")
-	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-
-	if not humanoid or not rootPart then return end
-
+function EnemyAIManager:updateChaserAI(aiData, targetPosition, distance)
 	if distance > AI_CONFIG.ATTACK_RANGE then
-		-- FIXED: Constant smooth movement toward player
-		humanoid:MoveTo(targetPosition)
-		humanoid.WalkSpeed = aiData.config.speed
-
-		-- OPTIONAL: Use pathfinding less frequently to reduce stuttering
-		if currentTime - aiData.lastPathUpdate >= (AI_CONFIG.PATHFINDING_REFRESH * 2) then -- Double the refresh time
-			self:updatePathfinding(aiData, targetPosition, currentTime)
-		end
-
-		-- Use direct movement if pathfinding fails
-		if not aiData.currentPath or aiData.currentPath.Status ~= Enum.PathStatus.Success then
-			humanoid:MoveTo(targetPosition) -- Direct movement fallback
-		end
+		self:moveTowardsTarget(aiData, targetPosition)
 	else
-		-- Close enough to attack, stop moving
-		humanoid:MoveTo(rootPart.Position)
+		local humanoid = aiData.enemy:FindFirstChild("Humanoid")
+		local rootPart = aiData.enemy:FindFirstChild("HumanoidRootPart")
+		if humanoid and rootPart then
+			humanoid:MoveTo(rootPart.Position)
+		end
 	end
 end
 
-function EnemyAIManager:updateShooterAI(aiData, targetPosition, distance, currentTime)
+function EnemyAIManager:updateShooterAI(aiData, targetPosition, distance)
 	local config = aiData.config
 	local preferredDistance = config.preferredDistance or 25
 
 	if distance < preferredDistance - 5 then
 		self:moveAwayFromTarget(aiData, targetPosition)
-	elseif distance > preferredDistance + 5 then
-		self:moveTowardsTarget(aiData, targetPosition, currentTime)
+	elseif distance > preferredDistance + 10 then
+		self:moveTowardsTarget(aiData, targetPosition)
 	else
 		self:strafeAroundTarget(aiData, targetPosition)
 	end
 end
 
-function EnemyAIManager:updateLeaperAI(aiData, targetPosition, distance, currentTime)
-	local enemy = aiData.enemy
-	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-	local humanoid = enemy:FindFirstChild("Humanoid")
+function EnemyAIManager:updateFlyerAI(aiData, targetPosition, distance, currentTime)
+	local config = aiData.config
+	local preferredDistance = config.preferredDistance or 15
 
-	if not rootPart or not humanoid then
-		return
+	if not aiData.flyerState then
+		aiData.flyerState = "CIRCLING"
+		aiData.lastStateChange = currentTime
 	end
 
-	-- FIXED: Much more aggressive leaping behavior
-	if aiData.isLeaping then
-		-- Currently mid-leap, don't do anything
-		return 
-	end
+	local timeSinceStateChange = currentTime - aiData.lastStateChange
 
-	-- FIXED: Leap much more frequently and from further away
-	if distance <= 30 then -- Increased leap range significantly
-		-- Check if enough time has passed since last leap (reduced cooldown)
-		if currentTime - aiData.lastAttack >= 1.5 then -- Reduced from 3.0 to 1.5 seconds
-			print("🦘 Leaper ready to jump! Distance:", math.floor(distance))
-			self:executeLeapAttack(aiData, targetPosition, currentTime)
+	if aiData.flyerState == "CIRCLING" then
+		if distance < preferredDistance - 3 then
+			self:moveAwayFromTarget(aiData, targetPosition)
+		elseif distance > preferredDistance + 5 then
+			self:moveTowardsTarget(aiData, targetPosition)
 		else
-			-- Not ready to leap yet, move closer slowly
-			local direction = (targetPosition - rootPart.Position).Unit
-			local closePosition = rootPart.Position + (direction * 2) -- Move closer slowly
-			humanoid:MoveTo(closePosition)
-			humanoid.WalkSpeed = aiData.config.speed * 0.5 -- Move slowly while waiting
+			self:strafeAroundTarget(aiData, targetPosition)
 		end
-	else
-		-- Too far away, run toward player
-		humanoid:MoveTo(targetPosition)
-		humanoid.WalkSpeed = aiData.config.speed
+
+		if timeSinceStateChange > (2 + math.random() * 2) and distance <= 20 then
+			aiData.flyerState = "DIVING"
+			aiData.lastStateChange = currentTime
+			print("✈️", aiData.enemy.Name, "starting dive attack!")
+		end
+
+	elseif aiData.flyerState == "DIVING" then
+		local humanoid = aiData.enemy:FindFirstChild("Humanoid")
+		if humanoid then
+			humanoid.WalkSpeed = config.diveSpeed or 20
+			self:moveTowardsTarget(aiData, targetPosition)
+		end
+
+		if timeSinceStateChange > 2 or distance <= 6 then
+			aiData.flyerState = "RETREATING"
+			aiData.lastStateChange = currentTime
+			print("✈️", aiData.enemy.Name, "retreating after dive!")
+		end
+
+	elseif aiData.flyerState == "RETREATING" then
+		local humanoid = aiData.enemy:FindFirstChild("Humanoid")
+		if humanoid then
+			humanoid.WalkSpeed = config.speed
+		end
+		self:moveAwayFromTarget(aiData, targetPosition)
+
+		if timeSinceStateChange > (1 + math.random()) then
+			aiData.flyerState = "CIRCLING"
+			aiData.lastStateChange = currentTime
+		end
 	end
 end
 
-function EnemyAIManager:updateOrbiterAI(aiData, targetPosition, distance, currentTime)
+function EnemyAIManager:updateOrbiterAI(aiData, targetPosition, distance)
 	local config = aiData.config
 	local orbitDistance = config.orbitDistance or 15
 
-	aiData.orbitAngle = aiData.orbitAngle + (config.speed * 0.01)
-
-	local orbitX = targetPosition.X + math.cos(aiData.orbitAngle) * orbitDistance
-	local orbitZ = targetPosition.Z + math.sin(aiData.orbitAngle) * orbitDistance
-	local orbitPosition = Vector3.new(orbitX, targetPosition.Y, orbitZ)
-
-	local humanoid = aiData.enemy:FindFirstChild("Humanoid")
-	if humanoid then
-		humanoid:MoveTo(orbitPosition)
+	if distance < orbitDistance - 3 then
+		self:moveAwayFromTarget(aiData, targetPosition)
+	elseif distance > orbitDistance + 3 then
+		self:moveTowardsTarget(aiData, targetPosition)
+	else
+		self:strafeAroundTarget(aiData, targetPosition)
 	end
 end
 
-function EnemyAIManager:updateCowardAI(aiData, targetPosition, distance, currentTime)
+function EnemyAIManager:updateCowardAI(aiData, targetPosition, distance)
 	local config = aiData.config
 	local fleeDistance = config.fleeDistance or 20
 
 	if distance < fleeDistance then
 		self:moveAwayFromTarget(aiData, targetPosition)
 	else
-		self:wanderRandomly(aiData)
+		local humanoid = aiData.enemy:FindFirstChild("Humanoid")
+		local rootPart = aiData.enemy:FindFirstChild("HumanoidRootPart")
+		if humanoid and rootPart then
+			humanoid:MoveTo(rootPart.Position)
+		end
 	end
 end
 
--- ========================================================================
--- MOVEMENT FUNCTIONS
--- ========================================================================
-
-function EnemyAIManager:moveTowardsTarget(aiData, targetPosition, currentTime)
+function EnemyAIManager:updateWandererAI(aiData, currentTime)
 	local enemy = aiData.enemy
 	local humanoid = enemy:FindFirstChild("Humanoid")
 	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
 
 	if not humanoid or not rootPart then return end
 
-	-- FIXED: Reduce pathfinding frequency to prevent stuttering
-	local shouldUsePathfinding = (currentTime - aiData.lastPathUpdate) >= AI_CONFIG.PATHFINDING_REFRESH
-
-	if shouldUsePathfinding then
-		self:updatePathfinding(aiData, targetPosition, currentTime)
+	-- Initialize wanderer data (based on NPC pattern)
+	if not aiData.wandererData then
+		aiData.wandererData = {
+			isWalking = false,
+			walkTarget = rootPart.Position,
+			lastWalk = currentTime,
+			walkInterval = math.random(1, 3),
+			walkDistance = math.random(10, 30)
+		}
 	end
 
-	-- FIXED: Prioritize direct movement for smooth chasing
-	local useDirectMovement = true
+	local wandererData = aiData.wandererData
 
-	-- Only use pathfinding if we have a good path
-	if aiData.currentPath and aiData.currentPath.Status == Enum.PathStatus.Success then
-		local waypoints = aiData.currentPath:GetWaypoints()
-		if waypoints and #waypoints > 1 then
-			local nextWaypoint = waypoints[2]
-			local waypointDistance = (nextWaypoint.Position - rootPart.Position).Magnitude
+	-- Check if it's time to start walking
+	if not wandererData.isWalking and (currentTime - wandererData.lastWalk) >= wandererData.walkInterval then
+		-- Pick a random direction and distance
+		local angle = math.random() * math.pi * 2
+		local distance = wandererData.walkDistance
 
-			-- Only use waypoint if it's significantly different from direct path
-			local directDistance = (targetPosition - rootPart.Position).Magnitude
-			if waypointDistance < directDistance * 1.2 then -- Only 20% longer path
-				humanoid:MoveTo(nextWaypoint.Position)
-				useDirectMovement = false
-			end
+		local newTarget = Vector3.new(
+			rootPart.Position.X + math.cos(angle) * distance,
+			rootPart.Position.Y,
+			rootPart.Position.Z + math.sin(angle) * distance
+		)
+
+		wandererData.walkTarget = newTarget
+		wandererData.isWalking = true
+
+		humanoid:MoveTo(wandererData.walkTarget)
+		humanoid.WalkSpeed = aiData.config.speed
+
+		print("👻", enemy.Name, "started walking to new location")
+	end
+
+	-- Check if we've reached the target or should stop
+	if wandererData.isWalking then
+		local distanceToTarget = (wandererData.walkTarget - rootPart.Position).Magnitude
+
+		if distanceToTarget < 3 or (currentTime - wandererData.lastWalk) > 10 then
+			wandererData.isWalking = false
+			wandererData.lastWalk = currentTime
+			wandererData.walkInterval = math.random(3, 6)
+			wandererData.walkDistance = math.random(10, 30)
+
+			humanoid:MoveTo(rootPart.Position)
+			print("👻", enemy.Name, "stopped walking, waiting", wandererData.walkInterval, "seconds")
 		end
 	end
 
-	-- FIXED: Use direct movement for smooth chasing (most of the time)
-	if useDirectMovement then
-		humanoid:MoveTo(targetPosition)
+	-- Contact damage check
+	self:checkWandererContactDamage(aiData, currentTime)
+end
+
+-- ========================================================================
+-- MOVEMENT FUNCTIONS
+-- ========================================================================
+
+function EnemyAIManager:moveTowardsTarget(aiData, targetPosition)
+	local enemy = aiData.enemy
+	local humanoid = enemy:FindFirstChild("Humanoid")
+	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart then return end
+
+	local currentPos = rootPart.Position
+	local direction = (targetPosition - currentPos)
+	local distance = direction.Magnitude
+
+	if distance > 0.1 then
+		direction = direction.Unit
+	else
+		humanoid:MoveTo(currentPos)
+		return
 	end
 
-	-- Set movement speed
+	local spacingOffset = self:calculateEnemySpacingOffset(rootPart, aiData)
+	direction = (direction + spacingOffset).Unit
+
+	local finalDirection = self:getObstacleAvoidedDirection(rootPart, direction, aiData)
+	local moveDistance = math.min(distance, 50)
+	local finalTarget = currentPos + (finalDirection * moveDistance)
+
+	humanoid:MoveTo(Vector3.new(finalTarget.X, targetPosition.Y, finalTarget.Z))
 	humanoid.WalkSpeed = aiData.config.speed
+
+	self:updateStuckDetection(aiData, currentPos)
 end
 
 function EnemyAIManager:moveAwayFromTarget(aiData, targetPosition)
@@ -527,11 +492,17 @@ function EnemyAIManager:moveAwayFromTarget(aiData, targetPosition)
 
 	if not humanoid or not rootPart then return end
 
-	local awayDirection = (rootPart.Position - targetPosition).Unit
-	local awayPosition = rootPart.Position + (awayDirection * 20)
+	local currentPos = rootPart.Position
+	local awayDirection = (currentPos - targetPosition).Unit
 
-	humanoid:MoveTo(awayPosition)
+	local finalDirection = self:getObstacleAvoidedDirection(rootPart, awayDirection, aiData)
+	local retreatDistance = 15
+	local finalTarget = currentPos + (finalDirection * retreatDistance)
+
+	humanoid:MoveTo(finalTarget)
 	humanoid.WalkSpeed = aiData.config.speed
+
+	self:updateStuckDetection(aiData, currentPos)
 end
 
 function EnemyAIManager:strafeAroundTarget(aiData, targetPosition)
@@ -541,84 +512,242 @@ function EnemyAIManager:strafeAroundTarget(aiData, targetPosition)
 
 	if not humanoid or not rootPart then return end
 
-	local toPlayer = (targetPosition - rootPart.Position).Unit
-	local strafeDirection = Vector3.new(-toPlayer.Z, 0, toPlayer.X)
+	local currentPos = rootPart.Position
+	local toTarget = (targetPosition - currentPos).Unit
 
-	if math.random() > 0.5 then
-		strafeDirection = -strafeDirection
+	local strafeDirection = Vector3.new(-toTarget.Z, 0, toTarget.X)
+
+	if not aiData.strafeDirection then
+		aiData.strafeDirection = math.random() > 0.5 and 1 or -1
 	end
 
-	local strafePosition = rootPart.Position + (strafeDirection * 10)
-	humanoid:MoveTo(strafePosition)
+	if math.random() < 0.02 then
+		aiData.strafeDirection = -aiData.strafeDirection
+	end
+
+	strafeDirection = strafeDirection * aiData.strafeDirection
+
+	local finalDirection = self:getObstacleAvoidedDirection(rootPart, strafeDirection, aiData)
+	local strafeDistance = 8
+	local finalTarget = currentPos + (finalDirection * strafeDistance)
+
+	humanoid:MoveTo(finalTarget)
 	humanoid.WalkSpeed = aiData.config.speed
+
+	self:updateStuckDetection(aiData, currentPos)
 end
 
-function EnemyAIManager:wanderRandomly(aiData)
+-- ========================================================================
+-- ANTI-CLUSTERING SYSTEM
+-- ========================================================================
+
+function EnemyAIManager:calculateEnemySpacingOffset(rootPart, aiData)
+	local currentPos = rootPart.Position
+	local spacingOffset = Vector3.new(0, 0, 0)
+	local nearbyCount = 0
+
+	for otherEnemy, otherAiData in pairs(self.activeEnemies) do
+		if otherEnemy ~= aiData.enemy and otherEnemy.Parent then
+			local otherRootPart = otherEnemy:FindFirstChild("HumanoidRootPart")
+			if otherRootPart then
+				local distance = (otherRootPart.Position - currentPos).Magnitude
+
+				if distance < MOVEMENT_CONFIG.ENEMY_DETECTION_RADIUS and distance > 0.1 then
+					local awayDirection = (currentPos - otherRootPart.Position).Unit
+					local pushStrength = (MOVEMENT_CONFIG.ENEMY_PERSONAL_SPACE - distance) / MOVEMENT_CONFIG.ENEMY_PERSONAL_SPACE
+					pushStrength = math.max(0, pushStrength) * MOVEMENT_CONFIG.SPACING_FORCE_MULTIPLIER
+
+					spacingOffset = spacingOffset + (awayDirection * pushStrength)
+					nearbyCount = nearbyCount + 1
+				end
+			end
+		end
+	end
+
+	if nearbyCount > 0 then
+		spacingOffset = spacingOffset / nearbyCount
+		local maxSpacingForce = 0.3
+		if spacingOffset.Magnitude > maxSpacingForce then
+			spacingOffset = spacingOffset.Unit * maxSpacingForce
+		end
+	end
+
+	return spacingOffset
+end
+
+function EnemyAIManager:getObstacleAvoidedDirection(rootPart, preferredDirection, aiData)
+	local currentPos = rootPart.Position
+	local checkDistance = MOVEMENT_CONFIG.OBSTACLE_CHECK_DISTANCE
+
+	if self:isDirectionClearFromEverything(currentPos, preferredDirection, checkDistance, aiData) then
+		return preferredDirection
+	end
+
+	local bestDirection = preferredDirection
+	local bestScore = -1
+
+	for _, testDirection in pairs(MOVEMENT_CONFIG.AVOIDANCE_DIRECTIONS) do
+		if self:isDirectionClearFromEverything(currentPos, testDirection, checkDistance, aiData) then
+			local score = preferredDirection:Dot(testDirection)
+			if score > bestScore then
+				bestScore = score
+				bestDirection = testDirection
+			end
+		end
+	end
+
+	return bestDirection
+end
+
+function EnemyAIManager:isDirectionClearFromEverything(startPos, direction, distance, aiData)
+	if not self:isDirectionClear(startPos, direction, distance) then
+		return false
+	end
+
+	local testPos = startPos + (direction * distance)
+
+	for otherEnemy, otherAiData in pairs(self.activeEnemies) do
+		if otherEnemy ~= aiData.enemy and otherEnemy.Parent then
+			local otherRootPart = otherEnemy:FindFirstChild("HumanoidRootPart")
+			if otherRootPart then
+				local distanceToOther = (otherRootPart.Position - testPos).Magnitude
+				if distanceToOther < MOVEMENT_CONFIG.ENEMY_PERSONAL_SPACE then
+					return false
+				end
+			end
+		end
+	end
+
+	return true
+end
+
+function EnemyAIManager:isDirectionClear(startPos, direction, distance)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+	raycastParams.FilterDescendantsInstances = {workspace.CurrentCamera}
+
+	local rayResult = workspace:Raycast(
+		startPos + Vector3.new(0, 1, 0),
+		direction * distance,
+		raycastParams
+	)
+
+	if rayResult then
+		local hitPart = rayResult.Instance
+		if hitPart.CanCollide and not hitPart.Parent:FindFirstChild("Humanoid") then
+			return false
+		end
+	end
+
+	return true
+end
+
+-- ========================================================================
+-- STUCK DETECTION
+-- ========================================================================
+
+function EnemyAIManager:updateStuckDetection(aiData, currentPos)
+	local currentTime = tick()
+
+	if not aiData.stuckDetection then
+		aiData.stuckDetection = {
+			lastPosition = currentPos,
+			lastMoveTime = currentTime,
+			stuckTime = 0
+		}
+		return
+	end
+
+	local stuckData = aiData.stuckDetection
+	local timeSinceLastCheck = currentTime - stuckData.lastMoveTime
+
+	if timeSinceLastCheck >= 1.0 then
+		local distanceMoved = (currentPos - stuckData.lastPosition).Magnitude
+
+		if distanceMoved < MOVEMENT_CONFIG.STUCK_DISTANCE_THRESHOLD then
+			stuckData.stuckTime = stuckData.stuckTime + timeSinceLastCheck
+
+			if stuckData.stuckTime >= MOVEMENT_CONFIG.STUCK_CHECK_TIME then
+				self:executeStuckRecovery(aiData)
+				stuckData.stuckTime = 0
+			end
+		else
+			stuckData.stuckTime = 0
+		end
+
+		stuckData.lastPosition = currentPos
+		stuckData.lastMoveTime = currentTime
+	end
+end
+
+function EnemyAIManager:executeStuckRecovery(aiData)
 	local enemy = aiData.enemy
 	local humanoid = enemy:FindFirstChild("Humanoid")
 	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
 
 	if not humanoid or not rootPart then return end
 
-	local randomDirection = Vector3.new(
-		(math.random() - 0.5) * 20,
-		0,
-		(math.random() - 0.5) * 20
-	)
+	print("🔄 Executing stuck recovery for", enemy.Name)
 
-	local wanderPosition = rootPart.Position + randomDirection
-	humanoid:MoveTo(wanderPosition)
-	humanoid.WalkSpeed = aiData.config.speed * 0.5
+	local randomDirection = MOVEMENT_CONFIG.AVOIDANCE_DIRECTIONS[math.random(1, #MOVEMENT_CONFIG.AVOIDANCE_DIRECTIONS)]
+	local recoveryDistance = 10
+	local newTarget = rootPart.Position + (randomDirection * recoveryDistance)
+
+	humanoid:MoveTo(newTarget)
+	humanoid.WalkSpeed = aiData.config.speed * 1.5
 end
 
 -- ========================================================================
--- PATHFINDING SYSTEM
+-- FLYING MOVEMENT
 -- ========================================================================
 
-function EnemyAIManager:updatePathfinding(aiData, targetPosition, currentTime)
+function EnemyAIManager:handleFlyingMovement(aiData)
 	local enemy = aiData.enemy
 	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
 
 	if not rootPart then return end
 
-	local path = PathfindingService:CreatePath({
-		AgentRadius = 2,
-		AgentHeight = 5,
-		AgentCanJump = true,
-		WaypointSpacing = 4
-	})
+	local config = aiData.config
+	local flyHeight = config.flyHeight or 8
+	local currentPos = rootPart.Position
 
-	local success, errorMessage = pcall(function()
-		path:ComputeAsync(rootPart.Position, targetPosition)
-	end)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+	raycastParams.FilterDescendantsInstances = {enemy}
 
-	if success then
-		if path.Status == Enum.PathStatus.Success then
-			local waypoints = path:GetWaypoints()
-			if waypoints and #waypoints > 0 then
-				aiData.currentPath = path
-				aiData.lastPathUpdate = currentTime
-			else
-				aiData.currentPath = nil
+	local groundRay = workspace:Raycast(
+		currentPos,
+		Vector3.new(0, -MOVEMENT_CONFIG.GROUND_CHECK_DISTANCE, 0),
+		raycastParams
+	)
+
+	if groundRay then
+		local targetY = groundRay.Position.Y + flyHeight
+		local heightDifference = math.abs(currentPos.Y - targetY)
+
+		if heightDifference > 2 then
+			local bodyPosition = rootPart:FindFirstChild("BodyPosition")
+			if not bodyPosition then
+				bodyPosition = Instance.new("BodyPosition")
+				bodyPosition.MaxForce = Vector3.new(0, 4000, 0)
+				bodyPosition.P = 3000
+				bodyPosition.D = 500
+				bodyPosition.Parent = rootPart
 			end
-		else
-			aiData.currentPath = nil
+
+			bodyPosition.Position = Vector3.new(currentPos.X, targetY, currentPos.Z)
 		end
-	else
-		warn("❌ Pathfinding error for", enemy.Name, ":", errorMessage)
-		aiData.currentPath = nil
 	end
 end
 
 -- ========================================================================
--- ATTACK SYSTEMS
+-- ATTACK SYSTEM
 -- ========================================================================
 
 function EnemyAIManager:checkForAttacks(aiData, distance, currentTime)
 	local config = aiData.config
 	local attackCooldown = self:getAttackCooldown(config.attackType)
 
-	-- Check if attack is ready
 	if currentTime - aiData.lastAttack < attackCooldown then
 		return
 	end
@@ -627,14 +756,10 @@ function EnemyAIManager:checkForAttacks(aiData, distance, currentTime)
 
 	if config.attackType == "MELEE" then
 		inRange = distance <= (AI_CONFIG.ATTACK_RANGE + 2)
-
 	elseif config.attackType == "RANGED" then
 		inRange = distance <= AI_CONFIG.RANGED_ATTACK_RANGE
-
-	elseif config.attackType == "LEAP" then
-		-- FIXED: Leapers should attack from much further away
-		inRange = distance <= AI_CONFIG.LEAP_RANGE and distance > 3 -- Don't leap if too close
-
+	elseif config.attackType == "CONTACT" then
+		inRange = distance <= 4
 	end
 
 	if inRange then
@@ -655,18 +780,15 @@ function EnemyAIManager:executeAttack(aiData, currentTime)
 		self:executeMeleeAttack(aiData, target)
 	elseif config.attackType == "RANGED" then
 		self:executeRangedAttack(aiData, target)
-	elseif config.attackType == "LEAP" then
-		self:executeLeapAttack(aiData, target.Character.HumanoidRootPart.Position, currentTime)
+	elseif config.attackType == "CONTACT" then
+		self:executeContactAttack(aiData, target)
 	end
 end
 
 function EnemyAIManager:executeMeleeAttack(aiData, target)
 	print("⚔️ Melee attack from", aiData.enemy.Name, "to", target.Name)
 
-	-- ENHANCED: Multiple ways to deal damage
 	local damageDealt = false
-
-	-- Method 1: Try heart system damage
 	if ReplicatedStorage:FindFirstChild("SpikeHeartDamage") then
 		local damageEvent = ReplicatedStorage.SpikeHeartDamage
 		pcall(function()
@@ -676,23 +798,19 @@ function EnemyAIManager:executeMeleeAttack(aiData, target)
 		end)
 	end
 
-	-- Method 2: Try direct humanoid damage (backup)
 	if not damageDealt and target.Character and target.Character:FindFirstChild("Humanoid") then
 		pcall(function()
 			local humanoid = target.Character.Humanoid
-			humanoid.Health = math.max(0, humanoid.Health - (AI_CONFIG.DAMAGE_AMOUNT * 5)) -- Convert hits to health
+			humanoid.Health = math.max(0, humanoid.Health - (AI_CONFIG.DAMAGE_AMOUNT * 5))
 			damageDealt = true
 			print("✅ Direct humanoid damage to", target.Name)
 		end)
 	end
 
-	-- Method 3: Print if no damage system found
 	if not damageDealt then
 		print("❌ No damage system found! Check SpikeHeartDamage RemoteEvent")
-		print("💡 Make sure your heart system is loaded")
 	end
 
-	-- Visual effect
 	self:createAttackEffect(aiData.enemy, "MELEE")
 end
 
@@ -703,168 +821,66 @@ function EnemyAIManager:executeRangedAttack(aiData, target)
 	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
 	local targetPos = target.Character.HumanoidRootPart.Position
 
-	if not rootPart then 
+	if not rootPart then
 		print("❌ No HumanoidRootPart for ranged attack!")
-		return 
-	end
-
-	-- FIXED: Use rootPart.Position directly (not modified by other code)
-	local shootPos = rootPart.Position
-	print("🎯 Shooting from:", shootPos, "to:", targetPos)
-
-	-- Create projectile
-	self:createProjectile(shootPos, targetPos, target)
-
-	-- Visual effect
-	self:createAttackEffect(enemy, "RANGED")
-end
-
-function EnemyAIManager:executeLeapAttack(aiData, targetPosition, currentTime)
-	print("🦘 LEAP ATTACK from", aiData.enemy.Name)
-	local enemy = aiData.enemy
-	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-	local humanoid = enemy:FindFirstChild("Humanoid")
-
-	if not rootPart or not rootPart.Parent or aiData.isLeaping then
 		return
 	end
 
-	-- CRITICAL: Check and fix physics properties that prevent jumping
-	if rootPart.Anchored then
-		print("❌ Root part is anchored! Cannot jump!")
-		rootPart.Anchored = false
+	local shootPos = rootPart.Position
+	self:createProjectile(shootPos, targetPos, target)
+	self:createAttackEffect(enemy, "RANGED")
+end
+
+function EnemyAIManager:executeContactAttack(aiData, target)
+	print("⚡ Contact damage from", aiData.enemy.Name, "to", target.Name)
+
+	local damageDealt = false
+	if ReplicatedStorage:FindFirstChild("SpikeHeartDamage") then
+		local damageEvent = ReplicatedStorage.SpikeHeartDamage
+		pcall(function()
+			damageEvent:FireClient(target, AI_CONFIG.DAMAGE_AMOUNT)
+			damageDealt = true
+			print("✅ Contact damage sent to", target.Name)
+		end)
 	end
 
-	-- CRITICAL: Disable PlatformStand which prevents movement
-	if humanoid.PlatformStand then
-		print("🔧 Disabling PlatformStand for jump")
-		humanoid.PlatformStand = false
+	if not damageDealt and target.Character and target.Character:FindFirstChild("Humanoid") then
+		pcall(function()
+			local humanoid = target.Character.Humanoid
+			humanoid.Health = math.max(0, humanoid.Health - (AI_CONFIG.DAMAGE_AMOUNT * 5))
+			damageDealt = true
+			print("✅ Direct contact damage to", target.Name)
+		end)
 	end
 
-	-- CRITICAL: Set humanoid state to allow physics and disable ground sticking
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Flying, true)
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-
-	-- CRITICAL: Temporarily put humanoid in Physics state to allow jumping
-	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-
-	aiData.isLeaping = true
-	aiData.lastAttack = currentTime
-
-	-- Calculate leap
-	local currentPos = rootPart.Position
-	local leapDirection = (targetPosition - currentPos).Unit
-	local distance = (targetPosition - currentPos).Magnitude
-
-	-- FIXED: Completely consistent leap forces - same every time
-	local horizontalForce = 25 -- Fixed horizontal force
-	local verticalForce = 25   -- Fixed vertical force
-
-	-- No distance scaling - same jump every time regardless of distance
-
-	print("🦘 Attempting leap with force:", horizontalForce, verticalForce, "Distance:", math.floor(distance))
-
-	-- Remove other conflicting body movers first
-	for _, child in pairs(rootPart:GetChildren()) do
-		if child:IsA("BodyVelocity") or child:IsA("BodyPosition") or child:IsA("BodyAngularVelocity") then
-			child:Destroy()
-		end
+	if not damageDealt then
+		print("❌ No damage system found! Check SpikeHeartDamage RemoteEvent")
 	end
 
-	-- CRITICAL: Add rotational constraint to prevent falling over
-	local bodyAngularVelocity = Instance.new("BodyAngularVelocity")
-	bodyAngularVelocity.AngularVelocity = Vector3.new(0, 0, 0) -- No rotation
-	bodyAngularVelocity.MaxTorque = Vector3.new(10000, 0, 10000) -- Lock X and Z rotation, allow Y turning
-	bodyAngularVelocity.Parent = rootPart
+	self:flashEnemyColor(aiData.enemy, Color3.fromRGB(255, 255, 255), 0.2)
+end
 
-	-- METHOD 1: Use BodyVelocity for consistent jumps
-	local bodyVelocity = Instance.new("BodyVelocity")
-	bodyVelocity.MaxForce = Vector3.new(10000, 10000, 10000) -- Restored higher force
-	bodyVelocity.Velocity = (leapDirection * horizontalForce) + Vector3.new(0, verticalForce, 0)
-	bodyVelocity.Parent = rootPart
+function EnemyAIManager:checkWandererContactDamage(aiData, currentTime)
+	local enemy = aiData.enemy
+	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
 
-	print("🦘 BodyVelocity applied with velocity:", bodyVelocity.Velocity)
+	if not rootPart then return end
 
-	-- ALSO try direct AssemblyLinearVelocity as backup immediately
-	task.spawn(function()
-		task.wait(0.05) -- Very short wait
-		print("🦘 Root part AssemblyLinearVelocity after BV:", rootPart.AssemblyLinearVelocity)
-		print("🦘 Root part Position after 0.05s:", rootPart.Position)
+	if currentTime - aiData.lastAttack < 1.0 then return end
 
-		-- If BodyVelocity isn't working vertically, force it with AssemblyLinearVelocity
-		if math.abs(rootPart.AssemblyLinearVelocity.Y) < 10 then
-			print("🔧 Vertical velocity too low, forcing with AssemblyLinearVelocity")
-			rootPart.AssemblyLinearVelocity = (leapDirection * horizontalForce) + Vector3.new(0, verticalForce, 0)
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local playerPos = player.Character.HumanoidRootPart.Position
+			local distance = (playerPos - rootPart.Position).Magnitude
 
-			-- Also force humanoid into Physics state again
-			humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-		end
-	end)
-
-	-- Clean up BodyVelocity and rotational constraint after enough time for the jump
-	game:GetService("Debris"):AddItem(bodyVelocity, 1.2)
-	game:GetService("Debris"):AddItem(bodyAngularVelocity, 1.2) -- Clean up rotation lock too
-
-	-- IMMEDIATE reset after BodyVelocity expires to prevent sliding
-	task.spawn(function()
-		task.wait(1.3) -- Slightly after BodyVelocity is destroyed
-		if aiData and aiData.enemy and aiData.enemy.Parent and rootPart then
-			-- Force stop all movement
-			rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-			rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-
-			-- Force humanoid back to normal
-			if humanoid then
-				humanoid:ChangeState(Enum.HumanoidStateType.Running)
-				humanoid.PlatformStand = false
-			end
-
-			print("🛑 Force stopped sliding after leap")
-		end
-	end)
-
-	-- Monitor leap progress
-	task.spawn(function()
-		local leapStartTime = tick()
-		local startPos = rootPart.Position
-
-		while aiData and aiData.enemy and aiData.enemy.Parent and aiData.isLeaping do
-			task.wait(0.1)
-			local currentLeapPos = rootPart.Position
-			local leapDistance = (currentLeapPos - startPos).Magnitude
-
-			print("🦘 Leap progress - Distance moved:", math.floor(leapDistance), "Height:", math.floor(currentLeapPos.Y), "Velocity Y:", math.floor(rootPart.AssemblyLinearVelocity.Y))
-
-			-- Check if we're close to the player during leap
-			if aiData.currentTarget and aiData.currentTarget.Character then
-				local playerPos = aiData.currentTarget.Character.HumanoidRootPart.Position
-				local enemyPos = rootPart.Position
-				local currentDistance = (playerPos - enemyPos).Magnitude
-
-				if currentDistance <= 8 then
-					print("💥 Leap attack hit player!")
-					self:executeMeleeAttack(aiData, aiData.currentTarget)
-					break
-				end
-			end
-
-			-- Shorter timeout for more responsive behavior
-			if tick() - leapStartTime > 2.0 or leapDistance < 1 then -- Reduced from 3.0 to 2.0
-				print("🦘 Leap timeout or stuck")
+			if distance <= 4 then
+				print("⚡ Wanderer contact damage:", player.Name)
+				self:executeContactAttack(aiData, player)
+				aiData.lastAttack = currentTime
 				break
 			end
 		end
-
-		-- Reset leap state
-		if aiData and aiData.enemy and aiData.enemy.Parent then
-			aiData.isLeaping = false
-			print("🦘 Leap completed")
-		end
-	end)
-
-	-- Visual effect
-	self:createAttackEffect(enemy, "LEAP")
+	end
 end
 
 -- ========================================================================
@@ -872,37 +888,31 @@ end
 -- ========================================================================
 
 function EnemyAIManager:createProjectile(startPos, targetPos, target)
-	-- Create projectile part
 	local projectile = Instance.new("Part")
 	projectile.Name = "EnemyProjectile"
 	projectile.Size = Vector3.new(1, 1, 1)
 	projectile.Shape = Enum.PartType.Ball
 	projectile.Material = Enum.Material.Neon
-	projectile.Color = Color3.fromRGB(255, 100, 100) -- Red projectile
+	projectile.Color = Color3.fromRGB(255, 100, 100)
 	projectile.CanCollide = false
 	projectile.Anchored = true
 
-	-- FIXED: Better starting position - spawn from enemy center, not random location
-	local adjustedStartPos = startPos + Vector3.new(0, 1, 0) -- Slightly above enemy center
+	local adjustedStartPos = startPos + Vector3.new(0, 1, 0)
 	projectile.Position = adjustedStartPos
 	projectile.Parent = workspace
 
-	-- Add glow effect
 	local light = Instance.new("PointLight")
 	light.Color = Color3.fromRGB(255, 100, 100)
 	light.Brightness = 2
 	light.Range = 5
 	light.Parent = projectile
 
-	-- Calculate direction and animate
-	local direction = (targetPos - adjustedStartPos).Unit -- Use adjusted start pos
+	local direction = (targetPos - adjustedStartPos).Unit
 	local distance = (targetPos - adjustedStartPos).Magnitude
 	local travelTime = distance / AI_CONFIG.PROJECTILE_SPEED
 
-	-- FIXED: Better target position (aim at player's center, not feet)
 	local adjustedTargetPos = targetPos + Vector3.new(0, 2, 0)
 
-	-- Animate projectile movement
 	local tween = TweenService:Create(projectile,
 		TweenInfo.new(travelTime, Enum.EasingStyle.Linear),
 		{Position = adjustedTargetPos}
@@ -910,64 +920,42 @@ function EnemyAIManager:createProjectile(startPos, targetPos, target)
 
 	tween:Play()
 
-	-- Check for collision during flight
 	task.spawn(function()
 		local startTime = tick()
-		local lastPos = projectile.Position
 
 		while projectile.Parent and tick() - startTime < travelTime + 0.5 do
-			-- ENHANCED: Better collision detection
 			if target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
 				local playerPos = target.Character.HumanoidRootPart.Position
 				local projectilePos = projectile.Position
+				local hitDistance = (playerPos - projectilePos).Magnitude
 
-				-- Larger collision radius for easier hits
-				if (playerPos - projectilePos).Magnitude < 4 then -- Increased from 3 to 4
-					self:onProjectileHit(target)
-					break
+				if hitDistance <= 3 then
+					if ReplicatedStorage:FindFirstChild("SpikeHeartDamage") then
+						local damageEvent = ReplicatedStorage.SpikeHeartDamage
+						pcall(function()
+							damageEvent:FireClient(target, AI_CONFIG.DAMAGE_AMOUNT)
+							print("💥 Projectile hit", target.Name)
+						end)
+					end
+
+					local explosion = Instance.new("Explosion")
+					explosion.Position = projectilePos
+					explosion.BlastRadius = 3
+					explosion.BlastPressure = 0
+					explosion.Parent = workspace
+
+					projectile:Destroy()
+					return
 				end
 			end
 
-			lastPos = projectile.Position
-			task.wait(0.05) -- Check more frequently for better collision
+			task.wait(0.1)
 		end
 
-		-- Clean up projectile
 		if projectile.Parent then
 			projectile:Destroy()
 		end
 	end)
-end
-
-function EnemyAIManager:onProjectileHit(target)
-	print("💥 Projectile hit", target.Name)
-
-	-- ENHANCED: Multiple damage delivery methods
-	local damageDealt = false
-
-	-- Method 1: Heart system damage
-	if ReplicatedStorage:FindFirstChild("SpikeHeartDamage") then
-		local damageEvent = ReplicatedStorage.SpikeHeartDamage
-		pcall(function()
-			damageEvent:FireClient(target, AI_CONFIG.DAMAGE_AMOUNT)
-			damageDealt = true
-			print("✅ Projectile heart damage sent to", target.Name)
-		end)
-	end
-
-	-- Method 2: Direct humanoid damage (backup)
-	if not damageDealt and target.Character and target.Character:FindFirstChild("Humanoid") then
-		pcall(function()
-			local humanoid = target.Character.Humanoid
-			humanoid.Health = math.max(0, humanoid.Health - (AI_CONFIG.DAMAGE_AMOUNT * 5))
-			damageDealt = true
-			print("✅ Direct projectile damage to", target.Name)
-		end)
-	end
-
-	if not damageDealt then
-		print("❌ Projectile damage failed - no damage system available")
-	end
 end
 
 -- ========================================================================
@@ -975,37 +963,16 @@ end
 -- ========================================================================
 
 function EnemyAIManager:createAttackEffect(enemy, attackType)
-	if not enemy or not enemy.Parent then
-		return
-	end
-
 	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-	if not rootPart then
-		return
-	end
+	if not rootPart then return end
 
 	if attackType == "MELEE" then
-		self:flashEnemyColor(enemy, Color3.fromRGB(255, 100, 100), 0.2)
+		self:flashEnemyColor(enemy, Color3.fromRGB(255, 0, 0), 0.2)
 
-	elseif attackType == "RANGED" then
-		local flash = Instance.new("Part")
-		flash.Size = Vector3.new(2, 2, 2)
-		flash.Shape = Enum.PartType.Ball
-		flash.Material = Enum.Material.Neon
-		flash.Color = Color3.fromRGB(255, 255, 100)
-		flash.CanCollide = false
-		flash.Anchored = true
-		flash.Position = rootPart.Position + Vector3.new(0, 2, 0)
-		flash.Parent = workspace
-
-		game:GetService("Debris"):AddItem(flash, 0.3)
-
-	elseif attackType == "LEAP" then
-		-- FIXED: Changed from Smoke to Sand material
 		local dust = Instance.new("Part")
 		dust.Size = Vector3.new(4, 1, 4)
 		dust.Shape = Enum.PartType.Block
-		dust.Material = Enum.Material.Sand  -- FIXED: Was Smoke (invalid)
+		dust.Material = Enum.Material.Sand
 		dust.Color = Color3.fromRGB(150, 150, 150)
 		dust.CanCollide = false
 		dust.Anchored = true
@@ -1020,6 +987,9 @@ function EnemyAIManager:createAttackEffect(enemy, attackType)
 		tween:Play()
 
 		game:GetService("Debris"):AddItem(dust, 1.0)
+
+	elseif attackType == "RANGED" then
+		self:flashEnemyColor(enemy, Color3.fromRGB(0, 100, 255), 0.3)
 	end
 end
 
@@ -1040,40 +1010,6 @@ function EnemyAIManager:flashEnemyColor(enemy, color, duration)
 end
 
 -- ========================================================================
--- FLYING MOVEMENT
--- ========================================================================
-
-function EnemyAIManager:handleFlyingMovement(aiData)
-	local enemy = aiData.enemy
-	local rootPart = enemy:FindFirstChild("HumanoidRootPart")
-	local humanoid = enemy:FindFirstChild("Humanoid")
-
-	-- FIXED: Added safety checks
-	if not rootPart or not humanoid then
-		return
-	end
-
-	local flyHeight = aiData.config.flyHeight or 8
-	local targetY = rootPart.Position.Y
-
-	local raycast = workspace:Raycast(rootPart.Position, Vector3.new(0, -50, 0))
-	if raycast then
-		targetY = raycast.Position.Y + flyHeight
-	end
-
-	if math.abs(rootPart.Position.Y - targetY) > 2 then
-		local bodyPosition = rootPart:FindFirstChild("BodyPosition")
-		if not bodyPosition then
-			bodyPosition = Instance.new("BodyPosition")
-			bodyPosition.MaxForce = Vector3.new(0, 4000, 0)
-			bodyPosition.Parent = rootPart
-		end
-
-		bodyPosition.Position = Vector3.new(rootPart.Position.X, targetY, rootPart.Position.Z)
-	end
-end
-
--- ========================================================================
 -- UTILITY FUNCTIONS
 -- ========================================================================
 
@@ -1086,6 +1022,7 @@ function EnemyAIManager:findNearestPlayer(position)
 			local distance = (player.Character.HumanoidRootPart.Position - position).Magnitude
 			if distance < nearestDistance then
 				nearestPlayer = player
+				nearestDistance = distance
 			end
 		end
 	end
@@ -1098,8 +1035,6 @@ function EnemyAIManager:getAttackCooldown(attackType)
 		return AI_CONFIG.MELEE_COOLDOWN
 	elseif attackType == "RANGED" then
 		return AI_CONFIG.RANGED_COOLDOWN
-	elseif attackType == "LEAP" then
-		return AI_CONFIG.LEAP_COOLDOWN
 	end
 	return 2.0
 end
@@ -1171,7 +1106,6 @@ end
 local aiManager = EnemyAIManager.new()
 _G.EnemyAI = aiManager
 
--- Debug commands
 _G.AIStats = function()
 	local stats = aiManager:getAIStats()
 	print("🤖 AI SYSTEM STATS:")
@@ -1262,15 +1196,6 @@ _G.SpawnTestEnemy = function(aiType, position)
 	return enemy
 end
 
--- Additional debug commands
-_G.TestLeapAttack = function()
-	local leaper = _G.SpawnTestEnemy("LEAPER", Vector3.new(20, 5, 0))
-	if leaper then
-		print("✅ Spawned test leaper at (20, 5, 0)")
-		print("🎯 Walk near it to test leap attack!")
-	end
-end
-
 _G.CheckActiveEnemies = function()
 	if _G.EnemyAI then
 		local count = 0
@@ -1342,5 +1267,23 @@ _G.CleanupDeadEnemies = function()
 	print("🧹 Cleaned up", cleaned, "dead/invalid enemies")
 end
 
-print("🤖 FIXED Enemy AI Manager loaded!")
-print("📋 All fixes applied:")
+print("🤖 FINAL CLEAN Enemy AI Manager loaded successfully!")
+print("📋 Features:")
+print("  ✅ 6 AI types: CHASER, SHOOTER, FLYER, ORBITER, COWARD, WANDERER")
+print("  ✅ Anti-clustering system prevents enemy bunching")
+print("  ✅ Simplified movement with obstacle avoidance")
+print("  ✅ Stuck detection and recovery")
+print("  ✅ Flying enemy support")
+print("  ✅ Attack types: MELEE, RANGED, CONTACT")
+print("")
+print("🔧 Debug Commands:")
+print("  _G.SpawnTestEnemy('CHASER') - Spawn test chaser")
+print("  _G.SpawnTestEnemy('WANDERER') - Spawn test wandering enemy")
+print("  _G.SpawnTestEnemy('FLYER') - Spawn test flying enemy")
+print("  _G.ListAITypes() - Show all AI types")
+print("  _G.AIStats() - Show statistics")
+print("")
+print("🎯 Ready for your basement demons!")
+print("👻 WANDERER: NPC-style random walking with contact damage")
+
+return EnemyAIManager
