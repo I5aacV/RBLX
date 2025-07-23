@@ -110,7 +110,7 @@ function DungeonGenerator:gridToWorldPosition(gridX, gridY)
 	local offsetZ = (gridY - centerGridY) * (ROOM_HEIGHT + ROOM_SPACING)
 
 	-- Return world position
-	return self.gridOrigin + Vector3.new(offsetX, 0, offsetZ)
+	return self.gridOrigin + Vector3.new(offsetX, 1, offsetZ)
 end
 
 -- Create camera trigger for a room
